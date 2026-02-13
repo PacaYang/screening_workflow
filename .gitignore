@@ -1,0 +1,5 @@
+.snakemake/
+.claude/
+.serena/
+algos/
+cache/
