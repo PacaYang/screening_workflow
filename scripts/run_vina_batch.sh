@@ -63,10 +63,11 @@ get_box_params() {
     local protein=$1
     local seq_file=$2
 
-    # Use Python to parse the docking box (handles string or list format)
+    # Use Python to parse the docking box and output as JSON
     python3 <<EOF
 import pandas as pd
 import ast
+import json
 
 df = pd.read_csv("${seq_file}")
 cell = df.loc[df['name'] == "${protein}", 'docking box'].iloc[0]
@@ -77,11 +78,11 @@ if isinstance(cell, str):
 else:
     vals = list(cell)
 
-center = vals[:3]
-size = vals[3:]
+# Normalize flat list to nested: [6] -> [[6]]
+if vals and not isinstance(vals[0], (list, tuple)):
+    vals = [vals]
 
-print(" ".join(map(str, center)))
-print(" ".join(map(str, size)))
+print(json.dumps(vals))
 EOF
 }
 
@@ -108,12 +109,10 @@ submit_vina_job() {
         return 1
     fi
 
-    # Get docking box parameters
-    BOX_PARAMS=$(get_box_params "$protein" "$SEQS_CSV")
-    BOX_CENTER=$(echo "$BOX_PARAMS" | head -1)
-    BOX_SIZE=$(echo "$BOX_PARAMS" | tail -1)
+    # Get docking box parameters as JSON
+    BOXES_JSON=$(get_box_params "$protein" "$SEQS_CSV")
 
-    if [ -z "$BOX_CENTER" ] || [ -z "$BOX_SIZE" ]; then
+    if [ -z "$BOXES_JSON" ]; then
         log_error "Failed to extract docking box parameters for ${protein}"
         return 1
     fi
@@ -155,8 +154,7 @@ echo "Job started at: \$(date)"
 echo "Running on host: \$(hostname)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Processing part ${part} for protein ${protein}"
-echo "Docking box center: ${BOX_CENTER}"
-echo "Docking box size: ${BOX_SIZE}"
+echo "Docking boxes: ${BOXES_JSON}"
 
 # Activate conda environment
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
@@ -170,8 +168,7 @@ echo "Starting Vina docking..."
 python "${VINA_EXE}" \\
     --smiles "${INPUT_CSV}" \\
     --pdb "${PDB_FILE}" \\
-    --box-center ${BOX_CENTER} \\
-    --box-size ${BOX_SIZE} \\
+    --boxes '${BOXES_JSON}' \\
     --output "${OUTPUT_DIR}" \\
     --smiles-col "ligand_description" \\
     --skip-docked

@@ -2,27 +2,50 @@ import numpy as np
 import pandas as pd
 import os
 import glob
+import re
 import argparse
-from tqdm import tqdm 
+from tqdm import tqdm
 
 def collect_results(path):
-    affinity_file_list = glob.glob(f'{path}/*/*/docking_affinities.txt')
+    # Recursive glob to find all docking_affinities.txt files
+    affinity_file_list = glob.glob(f'{path}/**/docking_affinities.txt', recursive=True)
     folder_lst = []
     idx_lst = []
+    box_lst = []
     affinity_lst = []
 
     for file in affinity_file_list:
-        folder = (file.split('/')[-3]).split('_')[-1]
+        # Parse path components relative to the base path
+        rel = os.path.relpath(file, path)
+        parts = rel.split(os.sep)
+
+        # Expected layouts:
+        #   new: {part}/lig{i}/box{j}/docking_affinities.txt  (4 parts)
+        #   old: {part}/lig{i}/docking_affinities.txt          (3 parts)
+        if len(parts) >= 4:
+            folder = parts[-4].split('_')[-1]
+            idx = parts[-3].replace('lig', '')
+            box_match = re.match(r'box(\d+)', parts[-2])
+            box = box_match.group(1) if box_match else '0'
+        elif len(parts) >= 3:
+            folder = parts[-3].split('_')[-1]
+            idx = parts[-2].replace('lig', '')
+            box = '0'
+        else:
+            # Fallback: try original parsing
+            folder = (file.split('/')[-3]).split('_')[-1]
+            idx = (file.split('/')[-2]).split('lig')[-1]
+            box = '0'
+
         folder_lst.append(folder)
-        idx = (file.split('/')[-2]).split('lig')[-1]
         idx_lst.append(idx)
+        box_lst.append(box)
         with open(file, "r") as f:
             affinity = f.readline().strip()
-        f.close()
         affinity_lst.append(affinity)
 
-    tmp_df = pd.DataFrame(data={'folder':folder_lst, 'idx':idx_lst, 'affinity':affinity_lst})
-    return tmp_df 
+    tmp_df = pd.DataFrame(data={'folder':folder_lst, 'idx':idx_lst, 'box':box_lst, 'affinity':affinity_lst})
+    return tmp_df
 
 def process_results(scores_df, input_folder):
     df_dicts = {}

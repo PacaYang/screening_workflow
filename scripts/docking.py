@@ -1,5 +1,6 @@
 # Import modules
 import sys, platform
+import json
 from prody import *
 from pathlib import Path
 from rdkit import Chem
@@ -239,11 +240,32 @@ def energy_minimize_openmm(input_pdb, output_pdb, pH=7.0):
 
     return output_pdb
 
-def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size):
+def parse_boxes(args):
+    """
+    Parse box specifications from CLI args.
+    Returns list of (center, size) tuples.
+    """
+    if args.boxes:
+        vals = json.loads(args.boxes)
+        # Normalize flat [6] to [[6]]
+        if vals and not isinstance(vals[0], (list, tuple)):
+            vals = [vals]
+        boxes = []
+        for v in vals:
+            if len(v) != 6:
+                raise ValueError(f"Each box must have 6 values [cx,cy,cz,sx,sy,sz], got {len(v)}")
+            boxes.append((v[:3], v[3:]))
+        return boxes
+    elif args.box_center and args.box_size:
+        return [(args.box_center, args.box_size)]
+    else:
+        raise ValueError("Must provide --boxes or both --box-center and --box-size")
+
+def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size, box_idx=0):
     # Check and add chain identifiers if missing
     pdb_file = add_chain_identifier(pdb_file)
 
-    reduce_opts = "approach=add\nadd_flip_movers=True" 
+    reduce_opts = "approach=add\nadd_flip_movers=True"
     env = os.environ.copy()
     env["MMTBX_CCP4_MONOMER_LIB"] = geostd_path
 
@@ -252,37 +274,43 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
     prepare_inPDB = f"{tmp_prefix}FH.pdb"
     output_filename = os.path.join(outdir, prepare_inPDB)
 
-    # Try reduce2 directly first
-    print("Attempting meeko & reduce2 on original PDB...")
-    subprocess.run(['python', reduce2, pdb_file, f"output.filename={output_filename}", reduce_opts],
-                          env=env, capture_output=True)
-    
-    # Size in each dimension    
+    # Run reduce2 once (cached by checking if output exists)
+    if not os.path.exists(output_filename):
+        print("Attempting meeko & reduce2 on original PDB...")
+        subprocess.run(['python', reduce2, pdb_file, f"output.filename={output_filename}", reduce_opts],
+                              env=env, capture_output=True)
+    else:
+        print(f"Reusing cached reduce2 output: {output_filename}")
+
+    # Size in each dimension
     center_x, center_y, center_z = centers
     size_x, size_y, size_z = docking_box_size
 
-    prepare_output = f"{outdir}/{tmp_prefix}FH"
+    # mk_prepare_receptor runs per box (flexible residues are box-dependent)
+    prepare_output = f"{outdir}/{tmp_prefix}FH_box{box_idx}"
     result = subprocess.run(["python", mk_prepare_receptor, "-i", output_filename, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)])
-    
+
     # If reduce2 fails, try with energy minimization first
     if result.returncode != 0:
         print("Meeko failed on original PDB. Attempting energy minimization first...")
         minimized_pdb = os.path.join(outdir, f"{tmp_prefix}_minimized.pdb")
-        energy_minimize_openmm(pdb_file, minimized_pdb, pH=7.0)
+        if not os.path.exists(minimized_pdb):
+            energy_minimize_openmm(pdb_file, minimized_pdb, pH=7.0)
 
         print("Retrying meeko & reduce2 on minimized PDB...")
         output_filename2 = os.path.join(outdir, f"{tmp_prefix}_minimizedFH.pdb")
-        subprocess.run(['python', reduce2, minimized_pdb, f"output.filename={output_filename2}", reduce_opts],
-                              env=env, capture_output=True)
+        if not os.path.exists(output_filename2):
+            subprocess.run(['python', reduce2, minimized_pdb, f"output.filename={output_filename2}", reduce_opts],
+                                  env=env, capture_output=True)
         result = subprocess.run(["python", mk_prepare_receptor, "-i", output_filename2, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)])
-        
+
         if result.returncode != 0:
             print("Meeko failed even after energy minimization!")
             print("STDERR:", result.stderr.decode())
             raise RuntimeError("Meeko failed to process the PDB file")
     else:
-        print("Meeko & reduce2 succeeded on original PDB.")
-    
+        print(f"Meeko & reduce2 succeeded for box{box_idx}.")
+
     # Return the prefix used for output files (could be xxx or xxx_chain)
     return tmp_prefix
 
@@ -362,74 +390,91 @@ if __name__ == "__main__":
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--pdb", type=str, help="the protein pdb file")
     parser.add_argument("--smiles", type=str, help="the SMILES file")
-    parser.add_argument("--box-center", type=float, nargs="+",  help="center of the docking box")
-    parser.add_argument("--box-size", type=float, nargs="+",  help="the size of the docking box")
+    parser.add_argument("--boxes", type=str, help="JSON string of box specs: [[cx,cy,cz,sx,sy,sz], ...]")
+    parser.add_argument("--box-center", type=float, nargs="+",  help="(deprecated) center of the docking box")
+    parser.add_argument("--box-size", type=float, nargs="+",  help="(deprecated) the size of the docking box")
     parser.add_argument('--output', type=str, help="output folder")
     parser.add_argument("--smiles-col", type=str, default='SMILES', help="the name of the SMILES col")
-    parser.add_argument("--skip-docked", action='store_true', help="skip molecules that are already docked") 
-    
+    parser.add_argument("--skip-docked", action='store_true', help="skip molecules that are already docked")
+
     args = parser.parse_args()
 
     pdb_file = args.pdb
     pH = 7.4
-    centers = args.box_center
-    docking_box_size = args.box_size
+    boxes = parse_boxes(args)
     outdir = args.output
 
-    # Prepare receptor and get the actual prefix used (handles xxx or xxx_chain)
-    tmp_prefix = prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size)
-    receptorPDBQT = f"{args.output}/{tmp_prefix}FH.pdbqt"
+    # Prepare receptor for each box once (before ligand loop)
+    receptor_pdbqts = {}
+    for box_idx, (center, size) in enumerate(boxes):
+        tmp_prefix = prepare_pdb(pdb_file, mk_prepare_receptor, outdir, center, size, box_idx=box_idx)
+        receptor_pdbqts[box_idx] = f"{tmp_prefix}FH_box{box_idx}.pdbqt"
+
     parent_folder = args.output
     tmp_df = pd.read_csv(args.smiles)
 
-    # Track success and failures
+    # Track success and failures per (ligand, box) pair
     successful_dockings = []
     failed_dockings = []
     skipped_dockings = []
 
     for i, lig in enumerate(tmp_df[args.smiles_col]):
-        folder_path = os.path.join(parent_folder, f"lig{i}")
-        os.makedirs(folder_path, exist_ok=True)
+        lig_folder = os.path.join(parent_folder, f"lig{i}")
+        os.makedirs(lig_folder, exist_ok=True)
 
-        # Check if already docked (only if skip-docked flag is set)
-        if args.skip_docked and is_already_docked(folder_path):
-            print(f"Skipping lig{i}: Already docked")
-            skipped_dockings.append(i)
-            continue
+        # Prepare ligand once per molecule
+        ligand_prepared = False
+        pdbqt_out = os.path.join(lig_folder, 'prepared_ligand.pdbqt')
 
-        try:
-            os.chdir(folder_path)
-            receptorPDBQT_path = os.path.join(parent_folder, receptorPDBQT)
-            pdbqt_out = os.path.join(folder_path,'prepared_ligand.pdbqt')
+        for box_idx, (center, size) in enumerate(boxes):
+            box_folder = os.path.join(lig_folder, f"box{box_idx}")
+            os.makedirs(box_folder, exist_ok=True)
 
-            print(f"Processing lig{i}...")
-            prepare_ligand(lig, pH, scrub, mk_prepare_ligand, folder_path)
-            dock(receptorPDBQT_path, pdbqt_out, centers, docking_box_size)
+            # Check if already docked (only if skip-docked flag is set)
+            if args.skip_docked and is_already_docked(box_folder):
+                print(f"Skipping lig{i}/box{box_idx}: Already docked")
+                skipped_dockings.append((i, box_idx))
+                continue
 
-            successful_dockings.append(i)
-            print(f"Successfully completed docking for lig{i}")
+            try:
+                # Prepare ligand once (cached across boxes)
+                if not ligand_prepared:
+                    print(f"Preparing lig{i}...")
+                    prepare_ligand(lig, pH, scrub, mk_prepare_ligand, lig_folder)
+                    ligand_prepared = True
 
-        except Exception as e:
-            failed_dockings.append(i)
-            print(f"ERROR: Failed to dock lig{i}: {str(e)}")
-            print(f"Continuing with next molecule...")
-            # Write error log to the ligand folder
-            error_log = os.path.join(folder_path, 'docking_error.log')
-            with open(error_log, 'w') as f:
-                f.write(f"Error during docking: {str(e)}\n")
+                os.chdir(box_folder)
+                receptorPDBQT_path = os.path.join(parent_folder, receptor_pdbqts[box_idx])
+
+                print(f"Docking lig{i} to box{box_idx}...")
+                dock(receptorPDBQT_path, pdbqt_out, center, size)
+
+                successful_dockings.append((i, box_idx))
+                print(f"Successfully completed docking for lig{i}/box{box_idx}")
+
+            except Exception as e:
+                failed_dockings.append((i, box_idx))
+                print(f"ERROR: Failed to dock lig{i}/box{box_idx}: {str(e)}")
+                print(f"Continuing with next...")
+                error_log = os.path.join(box_folder, 'docking_error.log')
+                with open(error_log, 'w') as f:
+                    f.write(f"Error during docking: {str(e)}\n")
 
     # Print summary
+    total_pairs = len(tmp_df) * len(boxes)
     print("\n" + "="*60)
     print("DOCKING SUMMARY")
     print("="*60)
     print(f"Total molecules: {len(tmp_df)}")
+    print(f"Boxes per molecule: {len(boxes)}")
+    print(f"Total (ligand, box) pairs: {total_pairs}")
     print(f"Successfully docked: {len(successful_dockings)}")
     if args.skip_docked:
         print(f"Skipped (already docked): {len(skipped_dockings)}")
     print(f"Failed: {len(failed_dockings)}")
 
     if failed_dockings:
-        print(f"\nFailed molecule indices: {failed_dockings}")
+        print(f"\nFailed pairs: {failed_dockings}")
     if args.skip_docked and skipped_dockings:
-        print(f"Skipped molecule indices: {skipped_dockings}")
+        print(f"Skipped pairs: {skipped_dockings}")
     print("="*60)
