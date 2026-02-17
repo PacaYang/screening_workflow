@@ -193,7 +193,7 @@ stage_make_input() {
     # Verify
     local ok=1
     for protein in $PROTEINS; do
-        local token="${TASK_ROOT}/${protein}/initial_screening/input/finish.token"
+        local token="${TASK_ROOT}/${protein}/initial_screening/inputs/finish.token"
         if [ -f "$token" ]; then
             echo "  ${protein}: input ready"
         else
@@ -499,10 +499,10 @@ show_status() {
         # Stage 1
         echo ""
         echo "  Stage 1 — Make Input:"
-        local token="${base}/initial_screening/input/finish.token"
+        local token="${base}/initial_screening/inputs/finish.token"
         if [ -f "$token" ]; then
             local n_inputs
-            n_inputs=$(find "${base}/initial_screening/input" -name "*.csv" 2>/dev/null | wc -l)
+            n_inputs=$(find "${base}/initial_screening/inputs" -name "*.csv" 2>/dev/null | wc -l)
             echo -e "    ${GREEN}Done${NC} (${n_inputs} input files)"
         else
             echo -e "    ${YELLOW}Not done${NC}"
