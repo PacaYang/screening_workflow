@@ -12,24 +12,23 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 
 # Tools
-BOLTZ2_EXE="/home/ubuntu/miniconda3/envs/boltz/bin/boltz"
+BOLTZ2_EXE="/home/yangl_pacagen_com/miniconda3/envs/boltz_test/bin/boltz"
 
 # Number of batches to split jobs into
 N_BATCHES=40
 
 # SLURM configuration
-# PARTITION="gpu"           # Change to your GPU partition name
 TIME_LIMIT="48:00:00"     # 4 hours per job
 MEMORY="15G"              # Memory per job
-CPUS_PER_TASK=4
-# GPUS_PER_NODE=1
+CPUS_PER_TASK=2
+PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -58,8 +57,8 @@ submit_boltz2_batch() {
     local protein=$1
     local batch_id=$2
 
-    local INPUT_DIR="/home/ubuntu/${protein}/boltz2_tmp/input"
-    local LOG_DIR="/home/ubuntu/${protein}/boltz2_tmp/logs"
+    local INPUT_DIR="/home/yangl_pacagen_com/${protein}/boltz2_tmp/input"
+    local LOG_DIR="/home/yangl_pacagen_com/${protein}/boltz2_tmp/logs"
     local FINE_DIR="${TASK_ROOT}/${protein}/fine_screening"
     local OUTPUT_DIR="${FINE_DIR}/Boltz2/output"
     local TOKEN_DIR="${OUTPUT_DIR}/token"
@@ -87,10 +86,11 @@ submit_boltz2_batch() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=boltz2_${protein}_b${batch_id}
-#SBATCH --constraint=g5.xlarge
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${LOG_DIR}/slurm_batch_${batch_id}_%j.out
 #SBATCH --error=${LOG_DIR}/slurm_batch_${batch_id}_%j.err
 
@@ -104,8 +104,8 @@ echo "Job ID: \$SLURM_JOB_ID"
 echo "Processing batch ${batch_id} for protein ${protein}"
 
 # Activate conda environment
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate boltz
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate boltz_test
 
 # Calculate job range for this batch
 SMILES_FILE="${SELECTED_CSV}"
@@ -211,7 +211,7 @@ for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
     # Check if input token exists (prerequisite)
-    INPUT_TOKEN="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_input.done"
+    INPUT_TOKEN="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/boltz_input.done"
     if [ ! -f "$INPUT_TOKEN" ]; then
         log_error "Input token not found for ${PROTEIN}: ${INPUT_TOKEN}"
         log_error "Please run the input preparation step first"

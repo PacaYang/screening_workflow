@@ -12,16 +12,16 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 
 # Tools
 MD_SCRIPT="${SCRIPT_ROOT}/pbsa/run_pbsa_md.sh"
-PBSA_EXE="/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin/gmx_MMPBSA"
-GMX_RC="/home/ubuntu/Applications/gromacs-2025.3/bin/GMXRC"
+PBSA_EXE="/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin/gmx_MMPBSA"
+GMX_RC="/home/yangl_pacagen_com/Applications/gromacs/bin/GMXRC"
 PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/pbsa"
 
 # Number of batches to split jobs into
@@ -31,9 +31,8 @@ N_BATCHES=100
 TIME_LIMIT="240:00:00"     # 240 hours per batch
 CPUS_PER_TASK=16
 
-# EC2 instance constraint (if using AWS ParallelCluster)
-CONSTRAINT="g5.4xlarge"    # Set to empty string if not using constraints
-# CONSTRAINT=""
+# SLURM partition
+PARTITION="g232"
 
 # ============================================================================
 # Functions
@@ -92,11 +91,6 @@ submit_md_pbsa_batch() {
 #SBATCH --job-name=md_pbsa_PROTEIN_bBATCHID
 EOFMAIN
 
-    # Add constraint if specified
-    if [ -n "$CONSTRAINT" ]; then
-        echo "#SBATCH --constraint=${CONSTRAINT}" >> "$JOB_SCRIPT"
-    fi
-
     # Add GPU request if specified
     if [ -n "$GPU_REQUEST" ]; then
         echo "#SBATCH ${GPU_REQUEST}" >> "$JOB_SCRIPT"
@@ -104,7 +98,9 @@ EOFMAIN
 
     cat >> "$JOB_SCRIPT" <<EOFMAIN
 #SBATCH --time=${TIME_LIMIT}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${LOG_DIR}/slurm_batch_${batch_id}_%j.out
 #SBATCH --error=${LOG_DIR}/slurm_batch_${batch_id}_%j.err
 
@@ -182,8 +178,8 @@ for i in \$(seq \$START_IDX \$((\$END_IDX - 1))); do
     echo "Using local temporary directory: \$LOCAL_MD_DIR"
 
     # Activate conda environment
-    source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-    conda activate gmxMMPBSA
+    source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+    conda activate gmxMMPBSA_test
 
     # Run MD script in local temporary directory
     if bash "${MD_SCRIPT}" \\
@@ -244,10 +240,10 @@ for i in \$(seq \$START_IDX \$((\$END_IDX - 1))); do
 
     # Set up environment for PBSA
     set +eu
-    source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-    conda activate gmxMMPBSA
-    bash -c "source ${GMX_RC}"
-    export PATH="/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin:\$PATH"
+    source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+    conda activate gmxMMPBSA_test
+    source "${GMX_RC}"
+    export PATH="/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin:\$PATH"
 
     # Create PBSA output directory
     mkdir -p "\${PBSA_OUTDIR}"

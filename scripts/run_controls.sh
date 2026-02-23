@@ -12,7 +12,7 @@ set -e
 # ============================================================================
 
 # Task root directory
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 
 # Script directory (where the automation scripts are located)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,13 +29,15 @@ SCRIPT_ROOT="${SCRIPT_DIR}/scripts"
 
 # Tools and executables
 VINA_EXE="${SCRIPT_ROOT}/docking.py"
-BOLTZ2_EXE="/home/ubuntu/miniconda3/envs/boltz/bin/boltz"
-AF3_EXE="/home/ubuntu/Applications/alphafold3/run_alphafold.py"
-DIFFDOCK_DIR="/home/ubuntu/Applications/DiffDock/"
-DIFFDOCK_CONFIG="/home/ubuntu/Applications/DiffDock/default_inference_args.yaml"
+BOLTZ2_EXE="/home/yangl_pacagen_com/miniconda3/envs/boltz_test/bin/boltz"
+AF3_EXE="/home/yangl_pacagen_com/Applications/alphafold3/run_alphafold.py"
+AF3_WEIGHT_DIR="${MASTER_AF3_WEIGHT_DIR:-/home/yangl_pacagen_com/Applications/model_weights/AF3}"
+AF3_DB_DIR="${MASTER_AF3_DB_DIR:-/home/yangl_pacagen_com/Applications/model_weights/af3_db}"
+DIFFDOCK_DIR="/home/yangl_pacagen_com/Applications/DiffDock/"
+DIFFDOCK_CONFIG="/home/yangl_pacagen_com/Applications/DiffDock/default_inference_args.yaml"
 MD_SCRIPT="${SCRIPT_ROOT}/pbsa/run_pbsa_md.sh"
-PBSA_EXE="/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin/gmx_MMPBSA"
-GMX_RC="/home/ubuntu/Applications/gromacs-2025.3/bin/GMXRC"
+PBSA_EXE="/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin/gmx_MMPBSA"
+GMX_RC="/home/yangl_pacagen_com/Applications/gromacs-2025.3/bin/GMXRC"
 PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/pbsa"
 
 # Workflow control flags (set to 1 to enable, 0 to disable)
@@ -65,8 +67,8 @@ DIFFDOCK_CPUS=4
 MD_PBSA_TIME_LIMIT="240:00:00"
 MD_PBSA_CPUS=64
 
-# EC2 instance constraint
-CONSTRAINT="g5.xlarge"
+# SLURM partition
+PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -173,10 +175,11 @@ submit_vina_control() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=vina_ctrl_${target}_${control_id}
-#SBATCH --constraint=${CONSTRAINT}
 #SBATCH --time=${VINA_TIME_LIMIT}
 #SBATCH --mem=${VINA_MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${VINA_CPUS}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${OUTPUT_DIR}/slurm_%j.out
 #SBATCH --error=${OUTPUT_DIR}/slurm_%j.err
 
@@ -189,8 +192,8 @@ echo "Control: ${target} control_${control_id}"
 echo "Docking box center: ${BOX_CENTER}"
 echo "Docking box size: ${BOX_SIZE}"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate vina
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate vina_test
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -239,7 +242,7 @@ submit_boltz2_control() {
     local YAML_FILE="${INPUT_DIR}/control.yaml"
 
     # Prefolded MSA file from prefold_boltz2
-    local MSA_FILE="/home/ubuntu/${target}/boltz2_tmp/boltz_results_${target}/msa/${target}_0.csv"
+    local MSA_FILE="/home/yangl_pacagen_com/${target}/boltz2_tmp/boltz_results_${target}/msa/${target}_0.csv"
 
     mkdir -p "$INPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
@@ -283,10 +286,11 @@ submit_boltz2_control() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=boltz2_ctrl_${target}_${control_id}
-#SBATCH --constraint=${CONSTRAINT}
 #SBATCH --time=${BOLTZ2_TIME_LIMIT}
 #SBATCH --mem=${BOLTZ2_MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${BOLTZ2_CPUS}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${OUTPUT_DIR}/slurm_%j.out
 #SBATCH --error=${OUTPUT_DIR}/slurm_%j.err
 
@@ -297,8 +301,8 @@ echo "Running on host: \$(hostname)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Control: ${target} control_${control_id}"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate boltz
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate boltz_test
 
 if "${BOLTZ2_EXE}" predict "${YAML_FILE}" \\
     --out_dir="${OUTPUT_DIR}" \\
@@ -384,10 +388,11 @@ submit_af3_control() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=af3_ctrl_${target}_${control_id}
-#SBATCH --constraint=${CONSTRAINT}
 #SBATCH --time=${AF3_TIME_LIMIT}
 #SBATCH --mem=${AF3_MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${AF3_CPUS}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${OUTPUT_DIR}/slurm_%j.out
 #SBATCH --error=${OUTPUT_DIR}/slurm_%j.err
 
@@ -398,19 +403,19 @@ echo "Running on host: \$(hostname)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Control: ${target} control_${control_id}"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate af3
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate af3_test
 
 # Run AlphaFold3 prediction
 python -u "${AF3_EXE}" \\
     --json_path "${JSON_FILE}" \\
-    --model_dir /shared/programs/af3_weights \\
-    --db_dir /shared/programs/af3_data \\
-    --jackhmmer_binary_path /home/ubuntu/Applications/hmmer/bin/jackhmmer \\
-    --hmmalign_binary_path /home/ubuntu/Applications/hmmer/bin/hmmalign \\
-    --hmmbuild_binary_path /home/ubuntu/Applications/hmmer/bin/hmmbuild \\
-    --hmmsearch_binary_path /home/ubuntu/Applications/hmmer/bin/hmmsearch \\
-    --nhmmer_binary_path /home/ubuntu/Applications/hmmer/bin/nhmmer \\
+    --model_dir ${AF3_WEIGHT_DIR} \\
+    --db_dir ${AF3_DB_DIR} \\
+    --jackhmmer_binary_path /usr/bin/jackhmmer \\
+    --hmmalign_binary_path /usr/bin/hmmalign \\
+    --hmmbuild_binary_path /usr/bin/hmmbuild \\
+    --hmmsearch_binary_path /usr/bin/hmmsearch \\
+    --nhmmer_binary_path /usr/bin/nhmmer \\
     --output_dir "${OUTPUT_DIR}"
 
 if [ \$? -eq 0 ]; then
@@ -464,10 +469,11 @@ submit_diffdock_control() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=diffdock_ctrl_${target}_${control_id}
-#SBATCH --constraint=${CONSTRAINT}
 #SBATCH --time=${DIFFDOCK_TIME_LIMIT}
 #SBATCH --mem=${DIFFDOCK_MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${DIFFDOCK_CPUS}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${OUTPUT_DIR}/slurm_%j.out
 #SBATCH --error=${OUTPUT_DIR}/slurm_%j.err
 
@@ -478,8 +484,8 @@ echo "Running on host: \$(hostname)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Control: ${target} control_${control_id}"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate diffdock
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate diffdock_test
 
 cd "${DIFFDOCK_DIR}"
 
@@ -551,9 +557,10 @@ submit_md_pbsa_control() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=md_pbsa_ctrl_${target}_${control_id}
-#SBATCH --constraint=g5.16xlarge
 #SBATCH --time=${MD_PBSA_TIME_LIMIT}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${MD_PBSA_CPUS}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${target_dir}/MD_PBSA/slurm_%j.out
 #SBATCH --error=${target_dir}/MD_PBSA/slurm_%j.err
 
@@ -596,8 +603,8 @@ echo "Using local temporary directory: \$LOCAL_MD_DIR"
 echo "This avoids disk I/O contention on shared filesystem"
 echo ""
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate gmxMMPBSA
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate gmxMMPBSA_test
 
 bash "${MD_SCRIPT}" \\
     "${SDF_FILE}" \\
@@ -653,10 +660,10 @@ rm -rf "\$LOCAL_MD_DIR"
 echo ""
 
 set +eu
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate gmxMMPBSA
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate gmxMMPBSA_test
 bash -c "source ${GMX_RC}"
-export PATH="/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin:\$PATH"
+export PATH="/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin:\$PATH"
 
 cd "${PBSA_OUTDIR}"
 
@@ -765,7 +772,7 @@ Input File Format (controls.csv):
 
 Prerequisites:
   - For Boltz2: Prefolded structures must exist at:
-    /home/ubuntu/{target}/boltz2_tmp/boltz_results_{target}/msa/{target}_0.csv
+    /home/yangl_pacagen_com/{target}/boltz2_tmp/boltz_results_{target}/msa/{target}_0.csv
     Run 'prefold_boltz2' from Snakefile first
 
   - For AF3: Prefolded structures must exist at:

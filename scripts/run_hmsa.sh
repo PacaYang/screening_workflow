@@ -10,18 +10,18 @@ set -e
 # Configuration
 # ============================================================================
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/algos/HMSA-DTI/predict_binding.py"
-MODEL="/home/ubuntu/screening_workflow/algos/HMSA-DTI/model_para/model.pt"
-CONDA_ENV="HMSA"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/HMSA_predict.py"
+MODEL="${MASTER_HMSA_MODEL:-/home/yangl_pacagen_com/Applications/model_weights/HMSA/model.pt}"
+CONDA_ENV="HMSA_test"
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"
 MEMORY="15G"
-CPUS_PER_TASK=4
-CONSTRAINT="g5.xlarge"
+CPUS_PER_TASK=2
+PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -64,10 +64,11 @@ submit_job() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=hmsa_${protein}_${idx}
-#SBATCH --constraint=${CONSTRAINT}
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${OUTPUT_DIR}/slurm_${idx}_%j.out
 #SBATCH --error=${OUTPUT_DIR}/slurm_${idx}_%j.err
 
@@ -76,11 +77,12 @@ set -e
 echo "Job started at: \$(date)"
 echo "Running on host: \$(hostname)"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
 
 mkdir -p "${OUTPUT_DIR}"
 
+export PYTHONPATH="/home/yangl_pacagen_com/Applications/HMSA-DTI:\${PYTHONPATH}"
 python "${EXE}" \\
     --test_path "${INPUT_CSV}" \\
     --preds_path "${OUTPUT_CSV}" \\

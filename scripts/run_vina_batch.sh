@@ -12,15 +12,15 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
 
 # Tools
-VINA_EXE="/home/ubuntu/screening_workflow/scripts/docking.py"
+VINA_EXE="/home/yangl_pacagen_com/screening_workflow/scripts/docking.py"
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"     # 8 hours per job
@@ -32,9 +32,8 @@ CPUS_PER_TASK=2
 GPU_REQUEST=""            # Empty = no GPU request
 # GPU_REQUEST="--gres=gpu:1"  # Uncomment if GPU is needed
 
-# EC2 instance constraint (if using AWS ParallelCluster)
-CONSTRAINT="g5.xlarge"    # Set to empty string if not using constraints
-# CONSTRAINT=""
+# SLURM partition
+PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -129,11 +128,6 @@ submit_vina_job() {
 #SBATCH --job-name=vina_${protein}_${part}
 EOF
 
-    # Add constraint if specified
-    if [ -n "$CONSTRAINT" ]; then
-        echo "#SBATCH --constraint=${CONSTRAINT}" >> "$JOB_SCRIPT"
-    fi
-
     # Add GPU request if specified
     if [ -n "$GPU_REQUEST" ]; then
         echo "#SBATCH ${GPU_REQUEST}" >> "$JOB_SCRIPT"
@@ -142,7 +136,9 @@ EOF
     cat >> "$JOB_SCRIPT" <<EOF
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${FINE_DIR}/Vina/output/slurm_${part}_%j.out
 #SBATCH --error=${FINE_DIR}/Vina/output/slurm_${part}_%j.err
 
@@ -157,8 +153,8 @@ echo "Processing part ${part} for protein ${protein}"
 echo "Docking boxes: ${BOXES_JSON}"
 
 # Activate conda environment
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate vina_new
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate vina_test
 
 # Create output directory
 mkdir -p "${OUTPUT_DIR}"

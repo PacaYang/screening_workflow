@@ -3,12 +3,9 @@ executor: pcluster-slurm
 jobs: 500
 keep-going: true
 
-  # queue-1-cr-2 Small node; g5.xlarge;   max-count=230;
-  #               24G GPU Mem; 4 CPU cores; 16G Mem
-  # queue-1-cr-1 Mid node;   g5.4xlarge;  max-count=60;
-  #               24G GPU Mem; 16 CPU cores; 64G Mem
-  # queue-1-cr-3 Large node; g5.16xlarge; max-count=14;
-  #               24G GPU Mem; 64 CPU cores; 256G Mem
+  # g24   Small node;  2 CPUs; ~15G RAM; 1 GPU; max-count=100 (default)
+  # g212  Mid node;    6 CPUs; ~47G RAM; 1 GPU; max-count=30
+  # g232  Large node; 16 CPUs; ~127G RAM; 1 GPU; max-count=15
 
 
 # Defaults for rules that omit them (can be overridden per-rule)
@@ -16,57 +13,57 @@ default-resources:
   - cpus_per_task=4
   - mem_mb=16000
   - runtime=600
-  - slurm_partition="queue-1-cr-2"
+  - slurm_partition="g24"
 
 set-resources:
   prefold_af3:
     cpus_per_task: 16
-    partition: "queue-1-cr-1"
+    partition: "g232"
     mem_mb: 64000
     slurm_extra: "--exclusive"
 
   prefold_boltz2:
-    - cpus_per_task=16
-    - partition="queue-1-cr-1"
-    - mem_mb=64000
-    - slurm_extra="--exclusive"
+    cpus_per_task: 16
+    partition: "g232"
+    mem_mb: 64000
+    slurm_extra: "--exclusive"
 
   vina:
-    - cpus_per_task=1
-    - mem_mb=1000
-    - runtime=6000
-    - partition="queue-1-cr-2"
+    cpus_per_task: 1
+    mem_mb: 1000
+    runtime: 6000
+    partition: "g24"
 
   af3:
-    - cpus_per_task=4
-    - partition="queue-1-cr-2"
-    - mem_mb=15000
-    - runtime=6000
-    - slurm_extra="--exclusive"
+    cpus_per_task: 4
+    partition: "g24"
+    mem_mb: 15000
+    runtime: 6000
+    slurm_extra: "--exclusive"
 
   boltz2:
-    - cpus_per_task=4
-    - mem_mb=15000
-    - runtime=6000
-    - partition="queue-1-cr-2"
-    - slurm_extra="--exclusive"
+    cpus_per_task: 4
+    mem_mb: 15000
+    runtime: 6000
+    partition: "g24"
+    slurm_extra: "--exclusive"
 
   diffdock:
-    - cpus_per_task=4
-    - mem_mb=15000
-    - runtime=6000
-    - partition="queue-1-cr-2"
-    - slurm_extra="--exclusive"
+    cpus_per_task: 4
+    mem_mb: 15000
+    runtime: 6000
+    partition: "g24"
+    slurm_extra: "--exclusive"
 
   md:
-    - cpus_per_task=64
-    - mem_mb=15000
-    - runtime=6000
-    - partition="queue-1-cr-3"
-    - slurm_extra="--exclusive"
+    cpus_per_task: 16
+    mem_mb: 15000
+    runtime: 6000
+    partition: "g232"
+    slurm_extra: "--exclusive"
 
   pbsa:
-    - cpus_per_task=2
-    - mem_mb=1000
-    - runtime=6000
-    - partition="queue-1-cr-2"
+    cpus_per_task: 2
+    mem_mb: 1000
+    runtime: 6000
+    partition: "g24"

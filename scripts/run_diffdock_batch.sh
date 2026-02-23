@@ -12,24 +12,23 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 
 # Tools
-DIFFDOCK_DIR="/home/ubuntu/Applications/DiffDock/"
-DIFFDOCK_CONFIG="/home/ubuntu/Applications/DiffDock/default_inference_args.yaml"
+DIFFDOCK_DIR="/home/yangl_pacagen_com/Applications/DiffDock/"
+DIFFDOCK_CONFIG="/home/yangl_pacagen_com/Applications/DiffDock/default_inference_args.yaml"
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"     # 12 hours per job (DiffDock can be slow)
 MEMORY="15G"              # Memory per job (DiffDock needs more memory)
-CPUS_PER_TASK=4
+CPUS_PER_TASK=2
 
-# EC2 instance constraint (if using AWS ParallelCluster)
-CONSTRAINT="g5.xlarge"    # Set to empty string if not using constraints
-# CONSTRAINT=""
+# SLURM partition
+PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -92,11 +91,6 @@ submit_diffdock_job() {
 #SBATCH --job-name=diffdock_${protein}_${part}
 EOF
 
-    # Add constraint if specified
-    if [ -n "$CONSTRAINT" ]; then
-        echo "#SBATCH --constraint=${CONSTRAINT}" >> "$JOB_SCRIPT"
-    fi
-
     # Add GPU request if specified
     if [ -n "$GPU_REQUEST" ]; then
         echo "#SBATCH ${GPU_REQUEST}" >> "$JOB_SCRIPT"
@@ -105,7 +99,9 @@ EOF
     cat >> "$JOB_SCRIPT" <<EOF
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${OUTPUT_DIR}/slurm_${part}_%j.out
 #SBATCH --error=${OUTPUT_DIR}/slurm_${part}_%j.err
 
@@ -119,8 +115,8 @@ echo "Job ID: \$SLURM_JOB_ID"
 echo "Processing part ${part} for protein ${protein}"
 
 # Activate conda environment
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate diffdock
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate diffdock_test
 
 # Create output directory
 mkdir -p "${OUTPUT_DIR}"

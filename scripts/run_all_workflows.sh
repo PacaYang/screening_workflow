@@ -11,7 +11,7 @@ set -e
 # ============================================================================
 
 # Task root directory
-TASK_ROOT="/home/ubuntu/snake_test"
+TASK_ROOT="/home/yangl_pacagen_com/snake_test"
 
 # Protein list (space-separated)
 PROTEINS="JAK1JH1"

@@ -10,17 +10,17 @@ set -e
 # Configuration
 # ============================================================================
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-BOLTZ_EXE="/home/ubuntu/miniconda3/envs/boltz/bin/boltz"
-CONDA_ENV="boltz"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+BOLTZ_EXE="/home/yangl_pacagen_com/miniconda3/envs/boltz_test/bin/boltz"
+CONDA_ENV="boltz_test"
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"
-MEMORY="15G"
-CPUS_PER_TASK=4
-CONSTRAINT="g5.xlarge"
+MEMORY="64G"
+CPUS_PER_TASK=16
+PARTITION="g232"
 
 # ============================================================================
 # Functions
@@ -47,7 +47,7 @@ submit_prefold_job() {
 
     local PREFOLD_DIR="${TASK_ROOT}/${protein}/fine_screening/Boltz2/prefold"
     local INPUT_YAML="${PREFOLD_DIR}/${protein}.yaml"
-    local OUTDIR="/home/ubuntu/${protein}/boltz2_tmp"
+    local OUTDIR="/home/yangl_pacagen_com/${protein}/boltz2_tmp"
     local CONFIDENCE="${OUTDIR}/boltz_results_${protein}/predictions/${protein}/confidence_${protein}_model_0.json"
     local LOG_DIR="${PREFOLD_DIR}/logs"
 
@@ -69,10 +69,11 @@ submit_prefold_job() {
     cat > "$JOB_SCRIPT" <<'EOFSCRIPT'
 #!/bin/bash
 #SBATCH --job-name=boltz2_prefold_PROTEIN_PLACEHOLDER
-#SBATCH --constraint=CONSTRAINT_PLACEHOLDER
 #SBATCH --time=TIME_LIMIT_PLACEHOLDER
 #SBATCH --mem=MEMORY_PLACEHOLDER
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=CPUS_PLACEHOLDER
+#SBATCH --partition=PARTITION_PLACEHOLDER
 #SBATCH --output=LOG_DIR_PLACEHOLDER/slurm_prefold_%j.out
 #SBATCH --error=LOG_DIR_PLACEHOLDER/slurm_prefold_%j.err
 
@@ -82,8 +83,8 @@ echo "Job started at: $(date)"
 echo "Running on host: $(hostname)"
 echo "Folding protein: PROTEIN_PLACEHOLDER"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate CONDA_ENV_PLACEHOLDER
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate boltz_test
 
 BOLTZ_EXE_PLACEHOLDER predict "INPUT_YAML_PLACEHOLDER" \
     --out_dir=OUTDIR_PLACEHOLDER \
@@ -95,7 +96,7 @@ EOFSCRIPT
 
     # Replace placeholders
     sed -i "s|PROTEIN_PLACEHOLDER|${protein}|g" "$JOB_SCRIPT"
-    sed -i "s|CONSTRAINT_PLACEHOLDER|${CONSTRAINT}|g" "$JOB_SCRIPT"
+    sed -i "s|PARTITION_PLACEHOLDER|${PARTITION}|g" "$JOB_SCRIPT"
     sed -i "s|TIME_LIMIT_PLACEHOLDER|${TIME_LIMIT}|g" "$JOB_SCRIPT"
     sed -i "s|MEMORY_PLACEHOLDER|${MEMORY}|g" "$JOB_SCRIPT"
     sed -i "s|CPUS_PLACEHOLDER|${CPUS_PER_TASK}|g" "$JOB_SCRIPT"

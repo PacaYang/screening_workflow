@@ -10,20 +10,20 @@ set -e
 # Configuration
 # ============================================================================
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-AF3_EXE="/home/ubuntu/Applications/alphafold3/run_alphafold.py"
-AF3_WEIGHT_DIR="/shared/programs/af3_weights"
-AF3_DB_DIR="/shared/programs/af3_data"
-HMMER_DIR="/home/ubuntu/Applications/hmmer/bin"
-CONDA_ENV="af3"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+AF3_EXE="/home/yangl_pacagen_com/Applications/alphafold3/run_alphafold.py"
+AF3_WEIGHT_DIR="${MASTER_AF3_WEIGHT_DIR:-/home/yangl_pacagen_com/Applications/model_weights/AF3}"
+AF3_DB_DIR="${MASTER_AF3_DB_DIR:-/home/yangl_pacagen_com/Applications/model_weights/af3_db}"
+HMMER_DIR="/home/yangl_pacagen_com/miniconda3/envs/af3_test/bin"
+CONDA_ENV="af3_test"
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"
-MEMORY="15G"
-CPUS_PER_TASK=4
-CONSTRAINT="g5.xlarge"
+MEMORY="64G"
+CPUS_PER_TASK=16
+PARTITION="g232"
 
 # ============================================================================
 # Functions
@@ -72,10 +72,11 @@ submit_prefold_job() {
     cat > "$JOB_SCRIPT" <<'EOFSCRIPT'
 #!/bin/bash
 #SBATCH --job-name=af3_prefold_PROTEIN_PLACEHOLDER
-#SBATCH --constraint=CONSTRAINT_PLACEHOLDER
 #SBATCH --time=TIME_LIMIT_PLACEHOLDER
 #SBATCH --mem=MEMORY_PLACEHOLDER
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=CPUS_PLACEHOLDER
+#SBATCH --partition=PARTITION_PLACEHOLDER
 #SBATCH --output=LOG_DIR_PLACEHOLDER/slurm_prefold_%j.out
 #SBATCH --error=LOG_DIR_PLACEHOLDER/slurm_prefold_%j.err
 
@@ -85,8 +86,8 @@ echo "Job started at: $(date)"
 echo "Running on host: $(hostname)"
 echo "Folding protein: PROTEIN_PLACEHOLDER"
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate CONDA_ENV_PLACEHOLDER
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate af3_test
 
 python -u AF3_EXE_PLACEHOLDER \
     --json_path INPUT_JSON_PLACEHOLDER \
@@ -99,10 +100,10 @@ python -u AF3_EXE_PLACEHOLDER \
     --nhmmer_binary_path HMMER_DIR_PLACEHOLDER/nhmmer \
     --output_dir PREFOLD_DIR_PLACEHOLDER
 
-if [[ -f "PREFOLD_DIR_PLACEHOLDER/PROTEIN_LOWER_PLACEHOLDER/PROTEIN_LOWER_PLACEHOLDER_summary_confidences.json" ]]; then
+if [[ -f "PREFOLD_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER/PROTEIN_PLACEHOLDER_summary_confidences.json" ]]; then
     touch "TOKEN_PLACEHOLDER"
 else
-    echo "Expected AF3 output not found: PREFOLD_DIR_PLACEHOLDER/PROTEIN_LOWER_PLACEHOLDER/PROTEIN_LOWER_PLACEHOLDER_summary_confidences.json" >&2
+    echo "Expected AF3 output not found: PREFOLD_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER/PROTEIN_PLACEHOLDER_summary_confidences.json" >&2
     exit 1
 fi
 
@@ -112,7 +113,7 @@ EOFSCRIPT
     # Replace placeholders
     sed -i "s|PROTEIN_LOWER_PLACEHOLDER|${protein_lower}|g" "$JOB_SCRIPT"
     sed -i "s|PROTEIN_PLACEHOLDER|${protein}|g" "$JOB_SCRIPT"
-    sed -i "s|CONSTRAINT_PLACEHOLDER|${CONSTRAINT}|g" "$JOB_SCRIPT"
+    sed -i "s|PARTITION_PLACEHOLDER|${PARTITION}|g" "$JOB_SCRIPT"
     sed -i "s|TIME_LIMIT_PLACEHOLDER|${TIME_LIMIT}|g" "$JOB_SCRIPT"
     sed -i "s|MEMORY_PLACEHOLDER|${MEMORY}|g" "$JOB_SCRIPT"
     sed -i "s|CPUS_PLACEHOLDER|${CPUS_PER_TASK}|g" "$JOB_SCRIPT"

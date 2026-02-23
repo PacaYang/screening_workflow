@@ -277,8 +277,13 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
     # Run reduce2 once (cached by checking if output exists)
     if not os.path.exists(output_filename):
         print("Attempting meeko & reduce2 on original PDB...")
-        subprocess.run(['python', reduce2, pdb_file, f"output.filename={output_filename}", reduce_opts],
+        reduce_result = subprocess.run(['python', reduce2, pdb_file, f"output.filename={output_filename}", reduce_opts],
                               env=env, capture_output=True)
+        if reduce_result.returncode != 0:
+            print(f"reduce2 returned non-zero exit code: {reduce_result.returncode}")
+            print("reduce2 STDERR:", reduce_result.stderr.decode() if reduce_result.stderr else "(no stderr)")
+        if not os.path.exists(output_filename):
+            print(f"WARNING: reduce2 did not produce expected output file: {output_filename}")
     else:
         print(f"Reusing cached reduce2 output: {output_filename}")
 
@@ -288,26 +293,81 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
 
     # mk_prepare_receptor runs per box (flexible residues are box-dependent)
     prepare_output = f"{outdir}/{tmp_prefix}FH_box{box_idx}"
-    result = subprocess.run(["python", mk_prepare_receptor, "-i", output_filename, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)])
+    mk_cmd = ["python", mk_prepare_receptor, "-i", output_filename, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)]
+    result = subprocess.run(mk_cmd, capture_output=True)
 
-    # If reduce2 fails, try with energy minimization first
+    # If mk_prepare_receptor fails, check for histidine ambiguity first
     if result.returncode != 0:
-        print("Meeko failed on original PDB. Attempting energy minimization first...")
-        minimized_pdb = os.path.join(outdir, f"{tmp_prefix}_minimized.pdb")
-        if not os.path.exists(minimized_pdb):
-            energy_minimize_openmm(pdb_file, minimized_pdb, pH=7.0)
+        import re
+        stderr_text = result.stderr.decode() if result.stderr else ""
+        print(f"mk_prepare_receptor failed (exit code {result.returncode}):")
+        print("STDERR:", stderr_text)
+        his_pattern = r"for residue_key='(.*?)', .* tied for fewest missing H: (\w+)"
+        his_matches = re.findall(his_pattern, stderr_text)
 
-        print("Retrying meeko & reduce2 on minimized PDB...")
-        output_filename2 = os.path.join(outdir, f"{tmp_prefix}_minimizedFH.pdb")
-        if not os.path.exists(output_filename2):
-            subprocess.run(['python', reduce2, minimized_pdb, f"output.filename={output_filename2}", reduce_opts],
-                                  env=env, capture_output=True)
-        result = subprocess.run(["python", mk_prepare_receptor, "-i", output_filename2, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)])
+        if his_matches:
+            # Resolve ambiguous histidines by picking the first tied variant
+            assignments = []
+            for res_key, first_variant in his_matches:
+                print(f"Resolving ambiguous histidine: {res_key} -> {first_variant}")
+                assignments.append(f"{res_key}={first_variant}")
+            set_template_arg = ",".join(assignments)
+            print(f"Retrying mk_prepare_receptor with --set_template {set_template_arg}")
+            result = subprocess.run(mk_cmd + ["--set_template", set_template_arg], capture_output=True)
+            if result.returncode != 0:
+                print("mk_prepare_receptor with --set_template failed:")
+                print("STDERR:", result.stderr.decode() if result.stderr else "(no stderr)")
 
         if result.returncode != 0:
-            print("Meeko failed even after energy minimization!")
-            print("STDERR:", result.stderr.decode())
-            raise RuntimeError("Meeko failed to process the PDB file")
+            # Try --allow_bad_res as a safety net before energy minimization
+            print("Trying mk_prepare_receptor with --allow_bad_res...")
+            allow_bad_cmd = mk_cmd + ["--allow_bad_res"]
+            if his_matches:
+                allow_bad_cmd += ["--set_template", set_template_arg]
+            result = subprocess.run(allow_bad_cmd, capture_output=True)
+            if result.returncode != 0:
+                print("mk_prepare_receptor with --allow_bad_res failed:")
+                print("STDERR:", result.stderr.decode() if result.stderr else "(no stderr)")
+
+        if result.returncode != 0:
+            print("Meeko failed on original PDB. Attempting energy minimization first...")
+            minimized_pdb = os.path.join(outdir, f"{tmp_prefix}_minimized.pdb")
+            if not os.path.exists(minimized_pdb):
+                energy_minimize_openmm(pdb_file, minimized_pdb, pH=7.0)
+
+            # Skip reduce2 on minimized PDB — OpenMM already adds hydrogens via addMissingHydrogens()
+            print("Running mk_prepare_receptor directly on minimized PDB (already has hydrogens)...")
+            mk_cmd2 = ["python", mk_prepare_receptor, "-i", minimized_pdb, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)]
+            result = subprocess.run(mk_cmd2, capture_output=True)
+
+            # Try histidine fix on minimized PDB too
+            if result.returncode != 0:
+                stderr_text2 = result.stderr.decode() if result.stderr else ""
+                print("mk_prepare_receptor on minimized PDB failed:")
+                print("STDERR:", stderr_text2)
+                his_matches2 = re.findall(his_pattern, stderr_text2)
+                if his_matches2:
+                    assignments2 = []
+                    for res_key, first_variant in his_matches2:
+                        print(f"Resolving ambiguous histidine (minimized): {res_key} -> {first_variant}")
+                        assignments2.append(f"{res_key}={first_variant}")
+                    set_template_arg2 = ",".join(assignments2)
+                    print(f"Retrying with --set_template {set_template_arg2}")
+                    result = subprocess.run(mk_cmd2 + ["--set_template", set_template_arg2], capture_output=True)
+
+            # Last resort: --allow_bad_res on minimized PDB
+            if result.returncode != 0:
+                print("Trying --allow_bad_res on minimized PDB...")
+                allow_bad_cmd2 = mk_cmd2 + ["--allow_bad_res"]
+                if his_matches2:
+                    allow_bad_cmd2 += ["--set_template", set_template_arg2]
+                result = subprocess.run(allow_bad_cmd2, capture_output=True)
+
+            if result.returncode != 0:
+                print("Meeko failed even after energy minimization!")
+                print("STDERR:", result.stderr.decode() if result.stderr else "(no stderr)")
+                print("STDOUT:", result.stdout.decode() if result.stdout else "(no stdout)")
+                raise RuntimeError("Meeko failed to process the PDB file")
     else:
         print(f"Meeko & reduce2 succeeded for box{box_idx}.")
 
@@ -372,10 +432,10 @@ def dock(receptorPDBQT, ligandPDBQT, centers, docking_box_size):
 
 if __name__ == "__main__":
     # Commandline scripts
-    exe_path = "/home/ubuntu/miniconda3/envs/vina/bin/"
-    vina_path = "/home/ubuntu/miniconda3/envs/vina/lib/python3.11/site-packages/vina/"
-    reduce2_path = "/home/ubuntu/miniconda3/pkgs/cctbx-base-2024.2-py38hbbc5a03_0/lib/python3.8/site-packages/mmtbx/command_line/" # default conda install prefix on Colab
-    geostd_p = "/home/ubuntu/Applications/"
+    exe_path = "/home/yangl_pacagen_com/miniconda3/envs/vina_test/bin/"
+    vina_path = "/home/yangl_pacagen_com/miniconda3/envs/vina_test/lib/python3.11/site-packages/vina/"
+    reduce2_path = "/home/yangl_pacagen_com/miniconda3/envs/vina_test/lib/python3.11/site-packages/mmtbx/command_line/"
+    geostd_p = "/home/yangl_pacagen_com/Applications/"
     scrub = locate_file(from_path = Path(exe_path), query_path = "scrub.py", query_name = "scrub.py")
     mk_prepare_ligand = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_ligand.py", query_name = "mk_prepare_ligand.py")
     mk_prepare_receptor = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_receptor.py", query_name = "mk_prepare_receptor.py")

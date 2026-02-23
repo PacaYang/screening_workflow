@@ -1,4 +1,5 @@
-#!/bin/bash 
+#!/bin/bash
+set -e
 
 # Check the forcefield type: amber99sb-ildn.ff
 # include the ligand itp, gaff_atomtype.itp in the system_EM
@@ -9,9 +10,9 @@ input_gro=$3
 input_EM_top=$4
 script_dir=$5
 
-python=/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin/python
-obabel=/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin/obabel
-acpype=/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin/acpype
+python=/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin/python
+obabel=/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin/obabel
+acpype=/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin/acpype
 
 # change to working directory
 if [ -d $output_dir ]; then
@@ -53,15 +54,15 @@ awk '/\[ *atomtypes *\]/ {p=1; print; next} /^\[/ && p {exit} p' ligand.acpype/l
 awk 'BEGIN{p=1} /\[ *atomtypes *\]/ {p=0; next} /^\[/ && !p {p=1} p' ligand.acpype/ligand_GMX.itp > ligand.itp
 
 
-source /home/ubuntu/Applications/gromacs-2025.3/bin/GMXRC
-gmx=/home/ubuntu/Applications/gromacs-2025.3/bin/gmx
+source /home/yangl_pacagen_com/Applications/gromacs/bin/GMXRC
+gmx=/home/yangl_pacagen_com/Applications/gromacs/bin/gmx
 
 $gmx editconf -f complex.gro -o complex.gro -d 2.5
 cp $input_EM_top system.top
 
 $gmx solvate -cp complex.gro -cs spc216 -p system -o sol
 $gmx grompp -f $script_dir/MDP/em -c sol -o ions -p system
-echo -e "SOL\n" | gmx genion -s ions -neutral -p system -conc 0.15 -o ions
+echo -e "SOL\n" | $gmx genion -s ions -neutral -p system -conc 0.15 -o ions
 
 echo -e "r UNL\nq\n" | $gmx make_ndx -f ions.gro
 

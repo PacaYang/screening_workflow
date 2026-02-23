@@ -10,10 +10,10 @@ set -e
 # Configuration
 # ============================================================================
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/scripts/split_csv.py"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/split_csv.py"
 
 # ============================================================================
 # Functions
@@ -66,7 +66,7 @@ for PROTEIN in $PROTEINS; do
         continue
     fi
 
-    conda activate general
+    conda activate HMSA_test
 
     mkdir -p "$OUTDIR"
     python "$EXE" \

@@ -12,15 +12,17 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 
 # RoseTTAFold-All-Atom paths
-RFAA_ROOT="/home/ubuntu/Applications/RoseTTAFold-All-Atom"
-RFAA_CONDA_ENV="RFAA"
+RFAA_ROOT="/home/yangl_pacagen_com/Applications/RoseTTAFold-All-Atom"
+RFAA_CONDA_ENV="RFAA_test"
+ROSETTA_DB_UR30="${MASTER_ROSETTA_DB_UR30:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/UniRef30_2020_06/UniRef30_2020_06}"
+ROSETTA_DB_BFD="${MASTER_ROSETTA_DB_BFD:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt}"
 
 # Number of batches for protein-ligand predictions
 N_BATCHES=10
@@ -30,7 +32,7 @@ LIGAND_TIME_LIMIT="48:00:00"
 LIGAND_MEMORY="15G"
 LIGAND_CPUS=4
 LIGAND_GPU_REQUEST=""
-LIGAND_CONSTRAINT="g5.xlarge"
+LIGAND_PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -95,9 +97,10 @@ submit_protein_ligand_batch() {
 #SBATCH --job-name=rfaa_ligand_PROTEIN_PLACEHOLDER_bBATCH_ID_PLACEHOLDER
 #SBATCH --time=TIME_LIMIT_PLACEHOLDER
 #SBATCH --mem=MEMORY_PLACEHOLDER
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=CPUS_PLACEHOLDER
 #SBATCH GPU_REQUEST_PLACEHOLDER
-#SBATCH --constraint=CONSTRAINT_PLACEHOLDER
+#SBATCH --partition=PARTITION_PLACEHOLDER
 #SBATCH --output=LOG_DIR_PLACEHOLDER/slurm_batch_BATCH_ID_PLACEHOLDER_%j.out
 #SBATCH --error=LOG_DIR_PLACEHOLDER/slurm_batch_BATCH_ID_PLACEHOLDER_%j.err
 
@@ -107,12 +110,12 @@ echo "Job started at: $(date)"
 echo "Processing protein: PROTEIN_PLACEHOLDER, batch: BATCH_ID_PLACEHOLDER"
 
 # Activate environment
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate RFAA_CONDA_ENV_PLACEHOLDER
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate RFAA_test
 
 # Set database paths for MSA generation
-export DB_UR30="/shared/programs/RFAA_data/UniRef30_2020_06/UniRef30_2020_06"
-export DB_BFD="/shared/programs/RFAA_data/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt"
+export DB_UR30="DB_UR30_PLACEHOLDER"
+export DB_BFD="DB_BFD_PLACEHOLDER"
 
 # Calculate batch range
 N_COMPOUNDS=$(tail -n +2 SELECTED_CSV_PLACEHOLDER | wc -l)
@@ -259,7 +262,7 @@ EOFSCRIPT
     sed -i "s|MEMORY_PLACEHOLDER|${LIGAND_MEMORY}|g" "$JOB_SCRIPT"
     sed -i "s|CPUS_PLACEHOLDER|${LIGAND_CPUS}|g" "$JOB_SCRIPT"
     sed -i "s|GPU_REQUEST_PLACEHOLDER|${LIGAND_GPU_REQUEST}|g" "$JOB_SCRIPT"
-    sed -i "s|CONSTRAINT_PLACEHOLDER|${LIGAND_CONSTRAINT}|g" "$JOB_SCRIPT"
+    sed -i "s|PARTITION_PLACEHOLDER|${LIGAND_PARTITION}|g" "$JOB_SCRIPT"
     sed -i "s|LOG_DIR_PLACEHOLDER|${LOG_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|RFAA_CONDA_ENV_PLACEHOLDER|${RFAA_CONDA_ENV}|g" "$JOB_SCRIPT"
     sed -i "s|RFAA_ROOT_PLACEHOLDER|${RFAA_ROOT}|g" "$JOB_SCRIPT"
@@ -269,6 +272,8 @@ EOFSCRIPT
     sed -i "s|OUTPUT_DIR_PLACEHOLDER|${OUTPUT_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|TOKEN_FILE_PLACEHOLDER|${TOKEN_FILE}|g" "$JOB_SCRIPT"
     sed -i "s|PROTEIN_FOLD_OUTPUT_PLACEHOLDER|${PROTEIN_FOLD_OUTPUT}|g" "$JOB_SCRIPT"
+    sed -i "s|DB_UR30_PLACEHOLDER|${ROSETTA_DB_UR30}|g" "$JOB_SCRIPT"
+    sed -i "s|DB_BFD_PLACEHOLDER|${ROSETTA_DB_BFD}|g" "$JOB_SCRIPT"
 
     # Submit job
     JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")

@@ -13,7 +13,7 @@ set -e
 # Configuration
 # ============================================================================
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 PROTEINS="${MASTER_PROTEINS:-JAK1JH1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -38,6 +38,23 @@ SKIP_ROSETTAFOLD=0
 SKIP_VINA=0
 SKIP_DIFFDOCK=0
 SKIP_MD_PBSA=0
+
+# Model weights configuration
+MODEL_WEIGHTS_DIR="/home/yangl_pacagen_com/Applications/model_weights"
+
+GRAPHDTA_MODEL="${MODEL_WEIGHTS_DIR}/GraphDTA/model_GINConvNet_kiba.pt"
+HMSA_MODEL="${MODEL_WEIGHTS_DIR}/HMSA/model.pt"
+COLDDTA_CHECKPOINT="${MODEL_WEIGHTS_DIR}/ColdDTA/epoch1297test_loss0.1798.pt"
+DRUGLAMP_CHECKPOINT="${MODEL_WEIGHTS_DIR}/DrugLAMP/max_val_ausum= 1.84364.ckpt"
+CONPLEX_MODEL="${MODEL_WEIGHTS_DIR}/ConPLex/ConPLex_v1_BindingDB.pt"
+AF3_WEIGHT_DIR="${MODEL_WEIGHTS_DIR}/AF3"
+AF3_DB_DIR="${MODEL_WEIGHTS_DIR}/af3_db"
+RFAA_WEIGHTS="${MODEL_WEIGHTS_DIR}/RoseTTAFold/RFAA_paper_weights.pt"
+ROSETTA_DB_UR30="${MODEL_WEIGHTS_DIR}/rosetta_db/UniRef30_2020_06/UniRef30_2020_06"
+ROSETTA_DB_BFD="${MODEL_WEIGHTS_DIR}/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt"
+
+# Compile summary configuration
+TARGET_N=3000
 
 # ============================================================================
 # Logging
@@ -344,36 +361,20 @@ stage_prepare_fine() {
 # ============================================================================
 
 stage_fine_screening() {
-    # 5a — Submit fine screening jobs
-    log_info "Stage 5a: Submitting fine screening jobs"
+    # 5a — Submit AF3, Boltz2, Vina, RoseTTAFold
+    log_info "Stage 5a: Submitting AF3, Boltz2, Vina, RoseTTAFold jobs"
     [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/run_af3_batch.sh"
     [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_boltz2_batch.sh"
     [ "$SKIP_VINA" -eq 0 ]        && run_or_dry bash "$SCRIPT_DIR/run_vina_batch.sh"
-    [ "$SKIP_DIFFDOCK" -eq 0 ]    && run_or_dry bash "$SCRIPT_DIR/run_diffdock_batch.sh"
     [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_rosettafold_batch.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY-RUN] Would poll SLURM for DiffDock, then submit MD+PBSA, then poll remaining"
+        echo "  [DRY-RUN] Would poll AF3/Boltz2/Vina/RoseTTAFold, then submit DiffDock, poll DiffDock, then submit MD+PBSA, poll MD+PBSA"
         return 0
     fi
 
-    # 5b — Wait for DiffDock (needed before MD+PBSA)
-    if [ "$SKIP_MD_PBSA" -eq 0 ] && [ "$SKIP_DIFFDOCK" -eq 0 ]; then
-        log_info "Stage 5b: Waiting for DiffDock jobs (MD+PBSA dependency)"
-        local dd_jobs
-        dd_jobs=$(collect_all_job_files "fine_screening/PBSA/DiffDock/output")
-        wait_for_slurm_jobs "$dd_jobs" "DiffDock"
-        rm -f "$dd_jobs"
-    fi
-
-    # 5c — Submit MD+PBSA
-    if [ "$SKIP_MD_PBSA" -eq 0 ]; then
-        log_info "Stage 5c: Submitting MD+PBSA jobs"
-        bash "$SCRIPT_DIR/run_md_pbsa_batch.sh"
-    fi
-
-    # 5d — Wait for all remaining fine screening jobs
-    log_info "Stage 5d: Waiting for all remaining fine screening jobs"
+    # 5b — Wait for AF3, Boltz2, Vina, RoseTTAFold
+    log_info "Stage 5b: Waiting for AF3, Boltz2, Vina, RoseTTAFold jobs"
     local tmp_jobs
     tmp_jobs=$(mktemp)
 
@@ -382,7 +383,6 @@ stage_fine_screening() {
     [ "$SKIP_BOLTZ2" -eq 0 ]      && job_paths="$job_paths fine_screening/Boltz2/output"
     [ "$SKIP_VINA" -eq 0 ]        && job_paths="$job_paths fine_screening/Vina/output"
     [ "$SKIP_ROSETTAFOLD" -eq 0 ] && job_paths="$job_paths fine_screening/RoseTTAFold/protein_ligand"
-    [ "$SKIP_MD_PBSA" -eq 0 ]     && job_paths="$job_paths fine_screening/PBSA/PBSA"
 
     for jp in $job_paths; do
         local jf
@@ -391,8 +391,38 @@ stage_fine_screening() {
         rm -f "$jf"
     done
 
-    wait_for_slurm_jobs "$tmp_jobs" "fine_screening"
+    wait_for_slurm_jobs "$tmp_jobs" "AF3/Boltz2/Vina/RoseTTAFold"
     rm -f "$tmp_jobs"
+
+    # 5c — Submit DiffDock
+    if [ "$SKIP_DIFFDOCK" -eq 0 ]; then
+        log_info "Stage 5c: Submitting DiffDock jobs"
+        bash "$SCRIPT_DIR/run_diffdock_batch.sh"
+    fi
+
+    # 5d — Wait for DiffDock
+    if [ "$SKIP_DIFFDOCK" -eq 0 ]; then
+        log_info "Stage 5d: Waiting for DiffDock jobs"
+        local dd_jobs
+        dd_jobs=$(collect_all_job_files "fine_screening/PBSA/DiffDock/output")
+        wait_for_slurm_jobs "$dd_jobs" "DiffDock"
+        rm -f "$dd_jobs"
+    fi
+
+    # 5e — Submit MD+PBSA
+    if [ "$SKIP_MD_PBSA" -eq 0 ]; then
+        log_info "Stage 5e: Submitting MD+PBSA jobs"
+        bash "$SCRIPT_DIR/run_md_pbsa_batch.sh"
+    fi
+
+    # 5f — Wait for MD+PBSA
+    if [ "$SKIP_MD_PBSA" -eq 0 ]; then
+        log_info "Stage 5f: Waiting for MD+PBSA jobs"
+        local pbsa_jobs
+        pbsa_jobs=$(collect_all_job_files "fine_screening/PBSA/PBSA")
+        wait_for_slurm_jobs "$pbsa_jobs" "MD+PBSA"
+        rm -f "$pbsa_jobs"
+    fi
 }
 
 # ============================================================================
@@ -640,7 +670,9 @@ Options:
   --skip-vina              Skip Vina
   --skip-diffdock          Skip DiffDock
   --skip-md-pbsa           Skip MD+PBSA
+  --target-n N             Number of compounds for fine screening (default: 3000)
   --dry-run                Show what would run without executing
+  --model-weights-dir DIR  Base directory for all model weights
 
 Stages:
   1  make_input          Prepare input files (head node)
@@ -741,9 +773,27 @@ while [[ $# -gt 0 ]]; do
             SKIP_MD_PBSA=1
             shift
             ;;
+        --target-n)
+            TARGET_N="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
+            ;;
+        --model-weights-dir)
+            MODEL_WEIGHTS_DIR="$2"
+            GRAPHDTA_MODEL="${MODEL_WEIGHTS_DIR}/GraphDTA/model_GINConvNet_kiba.pt"
+            HMSA_MODEL="${MODEL_WEIGHTS_DIR}/HMSA/model.pt"
+            COLDDTA_CHECKPOINT="${MODEL_WEIGHTS_DIR}/ColdDTA/epoch1297test_loss0.1798.pt"
+            DRUGLAMP_CHECKPOINT="${MODEL_WEIGHTS_DIR}/DrugLAMP/max_val_ausum= 1.84364.ckpt"
+            CONPLEX_MODEL="${MODEL_WEIGHTS_DIR}/ConPLex/ConPLex_v1_BindingDB.pt"
+            AF3_WEIGHT_DIR="${MODEL_WEIGHTS_DIR}/AF3"
+            AF3_DB_DIR="${MODEL_WEIGHTS_DIR}/af3_db"
+            RFAA_WEIGHTS="${MODEL_WEIGHTS_DIR}/RoseTTAFold/RFAA_paper_weights.pt"
+            ROSETTA_DB_UR30="${MODEL_WEIGHTS_DIR}/rosetta_db/UniRef30_2020_06/UniRef30_2020_06"
+            ROSETTA_DB_BFD="${MODEL_WEIGHTS_DIR}/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt"
+            shift 2
             ;;
         all|status|help)
             COMMAND="$1"
@@ -779,6 +829,17 @@ mkdir -p "$TASK_ROOT"
 # Export config for sub-scripts
 export MASTER_TASK_ROOT="$TASK_ROOT"
 export MASTER_PROTEINS="$PROTEINS"
+export MASTER_GRAPHDTA_MODEL="$GRAPHDTA_MODEL"
+export MASTER_HMSA_MODEL="$HMSA_MODEL"
+export MASTER_COLDDTA_CHECKPOINT="$COLDDTA_CHECKPOINT"
+export MASTER_DRUGLAMP_CHECKPOINT="$DRUGLAMP_CHECKPOINT"
+export MASTER_CONPLEX_MODEL="$CONPLEX_MODEL"
+export MASTER_AF3_WEIGHT_DIR="$AF3_WEIGHT_DIR"
+export MASTER_AF3_DB_DIR="$AF3_DB_DIR"
+export MASTER_RFAA_WEIGHTS="$RFAA_WEIGHTS"
+export MASTER_ROSETTA_DB_UR30="$ROSETTA_DB_UR30"
+export MASTER_ROSETTA_DB_BFD="$ROSETTA_DB_BFD"
+export MASTER_TARGET_N="$TARGET_N"
 
 # Banner
 echo "=========================================="
@@ -787,6 +848,8 @@ echo "=========================================="
 echo ""
 echo "Task Root:      $TASK_ROOT"
 echo "Proteins:       $PROTEINS"
+echo "Weights dir:    $MODEL_WEIGHTS_DIR"
+echo "Target N:       $TARGET_N"
 echo "Stages:         ${START_FROM} -> ${STOP_AFTER}"
 echo "Poll interval:  ${POLL_INTERVAL}s"
 echo "Dry run:        $([ "$DRY_RUN" -eq 1 ] && echo "yes" || echo "no")"

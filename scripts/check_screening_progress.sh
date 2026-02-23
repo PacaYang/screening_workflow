@@ -24,20 +24,20 @@ Examples:
   $0
 
   # Specify task root and one protein
-  $0 --task-root /home/ubuntu/snake_test --proteins "JAK1JH1"
+  $0 --task-root /home/yangl_pacagen_com/snake_test --proteins "JAK1JH1"
 
   # Specify multiple proteins
   $0 --task-root /path/to/data --proteins "JAK1 JAK2 JAK3"
 
 Environment Variables (used as defaults):
-  MASTER_TASK_ROOT     Task root directory (default: /home/ubuntu/snake_test)
+  MASTER_TASK_ROOT     Task root directory (default: /home/yangl_pacagen_com/snake_test)
   MASTER_PROTEINS      Space-separated protein list (default: JAK1JH1)
 
 EOF
 }
 
 # Default values from environment or hardcoded defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 PROTEINS="${MASTER_PROTEINS:-JAK1JH1}"
 
 # Parse command line arguments

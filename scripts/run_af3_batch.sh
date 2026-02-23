@@ -12,18 +12,18 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 
 # Tools
-AF3_EXE="/home/ubuntu/Applications/alphafold3/run_alphafold.py"
+AF3_EXE="/home/yangl_pacagen_com/Applications/alphafold3/run_alphafold.py"
 
 # Weight and database directories
-AF3_WEIGHT_DIR="/shared/programs/af3_weights"
-AF3_DB_DIR="/shared/programs/af3_data"
+AF3_WEIGHT_DIR="${MASTER_AF3_WEIGHT_DIR:-/home/yangl_pacagen_com/Applications/model_weights/AF3}"
+AF3_DB_DIR="${MASTER_AF3_DB_DIR:-/home/yangl_pacagen_com/Applications/model_weights/af3_db}"
 
 # Number of batches to split jobs into
 N_BATCHES=40
@@ -31,7 +31,8 @@ N_BATCHES=40
 # SLURM configuration
 TIME_LIMIT="48:00:00"
 MEMORY="15G"
-CPUS_PER_TASK=4
+CPUS_PER_TASK=2
+PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -60,7 +61,6 @@ submit_af3_batch() {
     local protein=$1
     local batch_id=$2
 
-    local PROTEIN_LOWER=$(echo "$protein" | tr '[:upper:]' '[:lower:]')
     local INPUT_DIR="${TASK_ROOT}/${protein}/fine_screening/AF3/input"
     local LOG_DIR="${TASK_ROOT}/${protein}/fine_screening/AF3/logs"
     local FINE_DIR="${TASK_ROOT}/${protein}/fine_screening"
@@ -90,10 +90,11 @@ submit_af3_batch() {
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=af3_${protein}_b${batch_id}
-#SBATCH --constraint=g5.xlarge
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEMORY}
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --partition=${PARTITION}
 #SBATCH --output=${LOG_DIR}/slurm_batch_${batch_id}_%j.out
 #SBATCH --error=${LOG_DIR}/slurm_batch_${batch_id}_%j.err
 
@@ -107,8 +108,8 @@ echo "Job ID: \$SLURM_JOB_ID"
 echo "Processing batch ${batch_id} for protein ${protein}"
 
 # Activate conda environment
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate af3
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate af3_test
 
 # Set AF3-specific GPU environment variables
 export XLA_FLAGS="--xla_gpu_enable_triton_gemm=false"
@@ -138,10 +139,8 @@ mkdir -p \$BATCH_LOCAL_OUT
 SUCCESS_COUNT=0
 FAIL_COUNT=0
 
-PROTEIN_LOWER="${PROTEIN_LOWER}"
-
 for i in \$(seq \$START_IDX \$((\$END_IDX - 1))); do
-    JSON_FILE="${INPUT_DIR}/\${PROTEIN_LOWER}_\${i}.json"
+    JSON_FILE="${INPUT_DIR}/${protein}_\${i}.json"
 
     if [ ! -f "\$JSON_FILE" ]; then
         echo "Warning: JSON file not found: \$JSON_FILE"

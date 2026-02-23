@@ -295,10 +295,10 @@ def main():
     parser.add_argument('--input-dir', required=True, help='Directory with input_*.csv files')
     parser.add_argument('--output-dir', required=True, help='Output directory for features')
     parser.add_argument('--protein-name', required=True, help='Protein name/ID')
-    parser.add_argument('--extract-p-script', default='/home/ubuntu/Applications/EviDTI/extract_p_emb.py')
-    parser.add_argument('--extract-2d-script', default='/home/ubuntu/Applications/EviDTI/extract_drug_2d_emb.py')
-    parser.add_argument('--extract-3d-script', default='/home/ubuntu/Applications/EviDTI/extract_drug_3d_emb.py')
-    parser.add_argument('--prepare-script', default='/home/ubuntu/Applications/EviDTI/prepare_features_custom.py')
+    parser.add_argument('--extract-p-script', default='/home/yangl_pacagen_com/Applications/EviDTI/extract_p_emb.py')
+    parser.add_argument('--extract-2d-script', default='/home/yangl_pacagen_com/Applications/EviDTI/extract_drug_2d_emb.py')
+    parser.add_argument('--extract-3d-script', default='/home/yangl_pacagen_com/Applications/EviDTI/extract_drug_3d_emb.py')
+    parser.add_argument('--prepare-script', default='/home/yangl_pacagen_com/Applications/EviDTI/prepare_features_custom.py')
 
     args = parser.parse_args()
 

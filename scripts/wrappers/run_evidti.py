@@ -124,7 +124,7 @@ def main():
     parser.add_argument('--model-path', required=True, help='EviDTI model checkpoint')
     parser.add_argument('--feature-dir', required=True, help='Directory with pre-extracted features')
     parser.add_argument('--protein-name', required=True, help='Protein name/ID')
-    parser.add_argument('--predict-script', default='/home/ubuntu/Applications/EviDTI/predict_custom.py',
+    parser.add_argument('--predict-script', default='/home/yangl_pacagen_com/Applications/EviDTI/predict_custom.py',
                         help='Path to EviDTI predict_custom.py')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
 

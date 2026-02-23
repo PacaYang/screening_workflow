@@ -119,7 +119,7 @@ def main():
     parser.add_argument('--failed-smiles', required=True, help='Failed SMILES CSV')
     parser.add_argument('--model-path', required=True, help='ConPLex model file')
     parser.add_argument('--protein-name', required=True, help='Protein name/ID')
-    parser.add_argument('--predict-script', default='/home/ubuntu/Applications/ConPLex/run_prediction_jobs.py',
+    parser.add_argument('--predict-script', default='/home/yangl_pacagen_com/screening_workflow/scripts/run_prediction_ConPLex.py',
                         help='Path to ConPLex run_prediction_jobs.py')
     parser.add_argument('--device', default='0', help='GPU device ID or cpu')
     parser.add_argument('--batch-size', type=int, default=128, help='Batch size')

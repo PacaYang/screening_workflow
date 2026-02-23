@@ -122,7 +122,7 @@ def main():
     parser.add_argument('--output', required=True, help='Output CSV (workflow format)')
     parser.add_argument('--failed-smiles', required=True, help='Failed SMILES CSV')
     parser.add_argument('--checkpoint', required=True, help='DrugLAMP checkpoint file')
-    parser.add_argument('--inference-script', default='/home/ubuntu/Applications/DrugLAMP/inference.py',
+    parser.add_argument('--inference-script', default='/home/yangl_pacagen_com/Applications/DrugLAMP/run_prediction_DrugLAMP.py',
                         help='Path to DrugLAMP inference.py')
     parser.add_argument('--model', default='DrugLAMP', help='Model architecture')
     parser.add_argument('--n-layer', type=int, default=30, help='ESM2 model size')

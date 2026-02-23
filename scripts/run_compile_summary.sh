@@ -10,11 +10,11 @@ set -e
 # Configuration
 # ============================================================================
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/scripts/init_select_top.py"
-TARGET_N=3000
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/init_select_top.py"
+TARGET_N="${MASTER_TARGET_N:-3000}"
 
 # ============================================================================
 # Functions
@@ -69,7 +69,7 @@ for PROTEIN in $PROTEINS; do
         continue
     fi
 
-    conda activate general
+    conda activate HMSA_test
 
     mkdir -p "$INIT_DIR"
     python "$EXE" \

@@ -10,11 +10,11 @@ set -e
 # Configuration
 # ============================================================================
 
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
-EXE="/home/ubuntu/screening_workflow/scripts/gen_boltz_yaml.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/gen_boltz_yaml.py"
 
 # ============================================================================
 # Functions
@@ -47,11 +47,11 @@ PROTEINS=$(get_proteins)
 for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
-    OUTDIR="/home/ubuntu/${PROTEIN}/boltz2_tmp/input"
-    TOKEN="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_input.done"
-    MSA="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
+    OUTDIR="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/input"
+    TOKEN="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/boltz_input.done"
+    MSA="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
     SELECTED="${TASK_ROOT}/${PROTEIN}/initial_screening/selected.csv"
-    CONFIDENCE="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
+    CONFIDENCE="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
 
     if [ -f "$TOKEN" ]; then
         log_info "Already completed for ${PROTEIN}, skipping"
@@ -68,7 +68,7 @@ for PROTEIN in $PROTEINS; do
         continue
     fi
 
-    conda activate boltz
+    conda activate boltz_test
 
     mkdir -p "$OUTDIR"
     python "$EXE" \

@@ -6,7 +6,7 @@
 
 set -e
 
-TASK_ROOT="/home/ubuntu/snake_test"
+TASK_ROOT="/home/yangl_pacagen_com/snake_test"
 
 # Get protein list
 get_proteins() {

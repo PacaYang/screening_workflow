@@ -12,22 +12,25 @@ set -e
 # ============================================================================
 
 # Source conda configuration
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
-TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
 
 # RoseTTAFold-All-Atom paths
-RFAA_ROOT="/home/ubuntu/Applications/RoseTTAFold-All-Atom"
-RFAA_WEIGHTS="${RFAA_ROOT}/RFAA_paper_weights.pt"
-RFAA_CONDA_ENV="RFAA"
+RFAA_ROOT="/home/yangl_pacagen_com/Applications/RoseTTAFold-All-Atom"
+RFAA_WEIGHTS="${MASTER_RFAA_WEIGHTS:-/home/yangl_pacagen_com/Applications/model_weights/RoseTTAFold/RFAA_paper_weights.pt}"
+ROSETTA_DB_UR30="${MASTER_ROSETTA_DB_UR30:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/UniRef30_2020_06/UniRef30_2020_06}"
+ROSETTA_DB_BFD="${MASTER_ROSETTA_DB_BFD:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt}"
+RFAA_CONDA_ENV="RFAA_test"
 
 # SLURM configuration for protein folding
 PROTEIN_TIME_LIMIT="48:00:00"
-PROTEIN_MEMORY="32G"
-PROTEIN_CPUS=8
-PROTEIN_GPU_REQUEST="--gres=gpu:a10g:1"
+PROTEIN_MEMORY="15G"
+PROTEIN_CPUS=2
+PROTEIN_GPU_REQUEST="--gres=gpu:1"
+PROTEIN_PARTITION="g24"
 
 # ============================================================================
 # Functions
@@ -107,12 +110,18 @@ generate_protein_fold_config() {
 
     log_info "Generating protein folding config for ${protein}"
 
+    local pdb100_db="/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/pdb100_2021Mar03/pdb100_2021Mar03"
+
     cat > "$config_file" <<EOF
 defaults:
   - base
 
 job_name: "${protein}_fold"
 output_path: "${output_dir}"
+checkpoint_path: "${RFAA_WEIGHTS}"
+
+database_params:
+  hhdb: "${pdb100_db}"
 
 protein_inputs:
   A:
@@ -162,8 +171,9 @@ submit_protein_fold_job() {
 #SBATCH --job-name=rfaa_fold_PROTEIN_PLACEHOLDER
 #SBATCH --time=TIME_LIMIT_PLACEHOLDER
 #SBATCH --mem=MEMORY_PLACEHOLDER
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=CPUS_PLACEHOLDER
-#SBATCH GPU_REQUEST_PLACEHOLDER
+#SBATCH --partition=PARTITION_PLACEHOLDER
 #SBATCH --output=LOG_DIR_PLACEHOLDER/slurm_protein_%j.out
 #SBATCH --error=LOG_DIR_PLACEHOLDER/slurm_protein_%j.err
 
@@ -173,12 +183,12 @@ echo "Job started at: $(date)"
 echo "Folding protein: PROTEIN_PLACEHOLDER"
 
 # Set database paths
-export DB_UR30="/shared/programs/RFAA_data/UniRef30_2020_06/UniRef30_2020_06"
-export DB_BFD="/shared/programs/RFAA_data/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt"
+export DB_UR30="DB_UR30_PLACEHOLDER"
+export DB_BFD="DB_BFD_PLACEHOLDER"
 
 # Activate environment
-source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate RFAA_CONDA_ENV_PLACEHOLDER
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate RFAA_test
 
 # Change to RFAA directory (required for relative paths)
 cd RFAA_ROOT_PLACEHOLDER
@@ -205,6 +215,9 @@ EOFSCRIPT
     sed -i "s|RFAA_ROOT_PLACEHOLDER|${RFAA_ROOT}|g" "$JOB_SCRIPT"
     sed -i "s|CONFIG_DIR_PLACEHOLDER|${CONFIG_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|TOKEN_FILE_PLACEHOLDER|${TOKEN_FILE}|g" "$JOB_SCRIPT"
+    sed -i "s|DB_UR30_PLACEHOLDER|${ROSETTA_DB_UR30}|g" "$JOB_SCRIPT"
+    sed -i "s|DB_BFD_PLACEHOLDER|${ROSETTA_DB_BFD}|g" "$JOB_SCRIPT"
+    sed -i "s|PARTITION_PLACEHOLDER|${PROTEIN_PARTITION}|g" "$JOB_SCRIPT"
 
     # Submit job
     JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")

@@ -18,7 +18,7 @@ Be careful with the variables you modify, some can have severe consequences on t
   assign_chainID       = 0                                              # Assign chains ID
   exp_ki               = 0.0                                            # Experimental Ki in nM
   full_traj            = 0                                              # Print a full traj. AND the thread trajectories
-  gmx_path             = "/home/ubuntu/Applications/gromacs-2025.3/bin" # Force to use this path to get GROMACS executable
+  gmx_path             = "/home/yangl_pacagen_com/Applications/gromacs-2025.3/bin" # Force to use this path to get GROMACS executable
   keep_files           = 2                                              # How many files to keep after successful completion
   netcdf               = 0                                              # Use NetCDF intermediate trajectories
   solvated_trajectory  = 1                                              # Define if it is necessary to cleanup the trajectories
