@@ -262,6 +262,8 @@ def parse_boxes(args):
         raise ValueError("Must provide --boxes or both --box-center and --box-size")
 
 def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size, box_idx=0):
+    import numpy as np
+
     # Check and add chain identifiers if missing
     pdb_file = add_chain_identifier(pdb_file)
 
@@ -273,6 +275,10 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
     tmp_prefix = pdb_file.split(".pdb")[0].split("/")[-1]
     prepare_inPDB = f"{tmp_prefix}FH.pdb"
     output_filename = os.path.join(outdir, prepare_inPDB)
+
+    # Compute original CA COM before reduce2
+    original_ca_com = get_ca_center_of_mass(pdb_file)
+    print(f"Original PDB CA COM: {original_ca_com}")
 
     # Run reduce2 once (cached by checking if output exists)
     if not os.path.exists(output_filename):
@@ -287,8 +293,24 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
     else:
         print(f"Reusing cached reduce2 output: {output_filename}")
 
+    # Detect coordinate shift introduced by reduce2
+    reduce2_ca_com = get_ca_center_of_mass(output_filename)
+    coord_shift = reduce2_ca_com - original_ca_com
+    shift_magnitude = np.linalg.norm(coord_shift)
+    print(f"reduce2 CA COM: {reduce2_ca_com}")
+    print(f"Coordinate shift from reduce2: {coord_shift} (magnitude: {shift_magnitude:.2f} A)")
+
+    # Adjust box centers to follow the protein
+    adjusted_centers = [
+        centers[0] + coord_shift[0],
+        centers[1] + coord_shift[1],
+        centers[2] + coord_shift[2],
+    ]
+    if shift_magnitude > 1.0:
+        print(f"Adjusting box centers: {list(centers)} -> {adjusted_centers}")
+
     # Size in each dimension
-    center_x, center_y, center_z = centers
+    center_x, center_y, center_z = adjusted_centers
     size_x, size_y, size_z = docking_box_size
 
     # mk_prepare_receptor runs per box (flexible residues are box-dependent)
@@ -335,6 +357,20 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
             if not os.path.exists(minimized_pdb):
                 energy_minimize_openmm(pdb_file, minimized_pdb, pH=7.0)
 
+            # Recompute shift for the fallback path
+            minimized_ca_com = get_ca_center_of_mass(minimized_pdb)
+            fallback_shift = minimized_ca_com - original_ca_com
+            fallback_mag = np.linalg.norm(fallback_shift)
+            print(f"Fallback shift (original -> minimized): {fallback_shift} (magnitude: {fallback_mag:.2f} A)")
+            adjusted_centers = [
+                centers[0] + fallback_shift[0],
+                centers[1] + fallback_shift[1],
+                centers[2] + fallback_shift[2],
+            ]
+            if fallback_mag > 1.0:
+                print(f"Adjusting box centers (fallback): {list(centers)} -> {adjusted_centers}")
+            center_x, center_y, center_z = adjusted_centers
+
             # Skip reduce2 on minimized PDB — OpenMM already adds hydrogens via addMissingHydrogens()
             print("Running mk_prepare_receptor directly on minimized PDB (already has hydrogens)...")
             mk_cmd2 = ["python", mk_prepare_receptor, "-i", minimized_pdb, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)]
@@ -371,8 +407,8 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
     else:
         print(f"Meeko & reduce2 succeeded for box{box_idx}.")
 
-    # Return the prefix used for output files (could be xxx or xxx_chain)
-    return tmp_prefix
+    # Return prefix and adjusted centers so caller uses corrected coordinates for docking
+    return tmp_prefix, adjusted_centers
 
 def prepare_ligand(lig_input, pH, scrub, mk_prepare_ligand, outdir):
     ligand_Smiles = lig_input
@@ -466,9 +502,11 @@ if __name__ == "__main__":
 
     # Prepare receptor for each box once (before ligand loop)
     receptor_pdbqts = {}
+    adjusted_centers_per_box = {}
     for box_idx, (center, size) in enumerate(boxes):
-        tmp_prefix = prepare_pdb(pdb_file, mk_prepare_receptor, outdir, center, size, box_idx=box_idx)
+        tmp_prefix, adj_center = prepare_pdb(pdb_file, mk_prepare_receptor, outdir, center, size, box_idx=box_idx)
         receptor_pdbqts[box_idx] = f"{tmp_prefix}FH_box{box_idx}.pdbqt"
+        adjusted_centers_per_box[box_idx] = adj_center
 
     parent_folder = args.output
     tmp_df = pd.read_csv(args.smiles)
@@ -507,7 +545,7 @@ if __name__ == "__main__":
                 receptorPDBQT_path = os.path.join(parent_folder, receptor_pdbqts[box_idx])
 
                 print(f"Docking lig{i} to box{box_idx}...")
-                dock(receptorPDBQT_path, pdbqt_out, center, size)
+                dock(receptorPDBQT_path, pdbqt_out, adjusted_centers_per_box[box_idx], size)
 
                 successful_dockings.append((i, box_idx))
                 print(f"Successfully completed docking for lig{i}/box{box_idx}")
