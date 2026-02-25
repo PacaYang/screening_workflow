@@ -47,7 +47,7 @@ submit_prefold_job() {
 
     local PREFOLD_DIR="${TASK_ROOT}/${protein}/fine_screening/Boltz2/prefold"
     local INPUT_YAML="${PREFOLD_DIR}/${protein}.yaml"
-    local OUTDIR="/home/yangl_pacagen_com/${protein}/boltz2_tmp"
+    local OUTDIR="${TASK_ROOT}/${protein}/fine_screening/Boltz2/prefold"
     local CONFIDENCE="${OUTDIR}/boltz_results_${protein}/predictions/${protein}/confidence_${protein}_model_0.json"
     local LOG_DIR="${PREFOLD_DIR}/logs"
 

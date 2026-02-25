@@ -25,7 +25,7 @@ SEQUENCES_CSV="${TASK_ROOT}/Input/sequences.csv"
 CONTROLS_OUTPUT_DIR="${TASK_ROOT}/Controls"
 
 # Script root for helper scripts
-SCRIPT_ROOT="${SCRIPT_DIR}/scripts"
+SCRIPT_ROOT="${SCRIPT_DIR}"
 
 # Tools and executables
 VINA_EXE="${SCRIPT_ROOT}/docking.py"
@@ -46,6 +46,10 @@ RUN_BOLTZ2=1
 RUN_AF3=1
 RUN_DIFFDOCK=1
 RUN_MD_PBSA=1
+COLLECT_ONLY=0
+
+# Polling interval for SLURM job monitoring (seconds)
+POLL_INTERVAL=300
 
 # SLURM configuration
 VINA_TIME_LIMIT="08:00:00"
@@ -88,12 +92,45 @@ log_error() {
     echo ""
 }
 
+wait_for_slurm_jobs() {
+    local job_file=$1
+    local label=$2
+
+    if [ ! -f "$job_file" ] || [ ! -s "$job_file" ]; then
+        log_info "No jobs to wait for ($label)"
+        return 0
+    fi
+
+    local total
+    total=$(wc -l < "$job_file")
+    log_info "Waiting for ${total} ${label} SLURM jobs..."
+
+    while true; do
+        local still_running=0
+        while IFS= read -r job_id; do
+            job_id=$(echo "$job_id" | tr -d '[:space:]')
+            [ -z "$job_id" ] && continue
+            if squeue -j "$job_id" &>/dev/null && squeue -j "$job_id" 2>/dev/null | grep -q "$job_id"; then
+                still_running=$((still_running + 1))
+            fi
+        done < "$job_file"
+
+        if [ "$still_running" -eq 0 ]; then
+            log_info "All ${label} jobs completed"
+            return 0
+        fi
+
+        log_info "${label}: ${still_running}/${total} jobs still running/pending. Next check in ${POLL_INTERVAL}s"
+        sleep "$POLL_INTERVAL"
+    done
+}
+
 # Function to extract docking box from sequences.csv
 get_box_params() {
     local protein=$1
 
     # Use Python to parse the docking box
-    python3 <<EOF
+    python <<EOF
 import pandas as pd
 import ast
 
@@ -242,7 +279,7 @@ submit_boltz2_control() {
     local YAML_FILE="${INPUT_DIR}/control.yaml"
 
     # Prefolded MSA file from prefold_boltz2
-    local MSA_FILE="/home/yangl_pacagen_com/${target}/boltz2_tmp/boltz_results_${target}/msa/${target}_0.csv"
+    local MSA_FILE="${TASK_ROOT}/${target}/fine_screening/Boltz2/prefold/boltz_results_${target}/msa/${target}_0.csv"
 
     mkdir -p "$INPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
@@ -260,7 +297,7 @@ submit_boltz2_control() {
     echo "$smiles" >> "$TEMP_SMILES_CSV"
 
     # Use gen_boltz_yaml.py to create YAML with prefolded MSA
-    python3 "${SCRIPT_ROOT}/gen_boltz_yaml.py" \
+    python "${SCRIPT_ROOT}/gen_boltz_yaml.py" \
         --output "$INPUT_DIR" \
         --msa "$MSA_FILE" \
         --smiles-path "$TEMP_SMILES_CSV" \
@@ -362,7 +399,7 @@ submit_af3_control() {
     echo "$smiles" >> "$TEMP_SMILES_CSV"
 
     # Use gen_af3_json_with_cmpds.py to create JSON with prefolded data
-    python3 "${SCRIPT_ROOT}/gen_af3_json_with_cmpds.py" \
+    python "${SCRIPT_ROOT}/gen_af3_json_with_cmpds.py" \
         --output-dir "$INPUT_DIR" \
         --input-json "$PREFOLD_JSON" \
         --smiles-file "$TEMP_SMILES_CSV" \
@@ -706,6 +743,182 @@ EOF
 }
 
 # ============================================================================
+# Collect Results Function
+# ============================================================================
+
+collect_control_results() {
+    log_info "Collecting control results"
+
+    # Iterate over each target directory under CONTROLS_OUTPUT_DIR
+    for target_path in "${CONTROLS_OUTPUT_DIR}"/*/; do
+        [ ! -d "$target_path" ] && continue
+        local target
+        target=$(basename "$target_path")
+
+        log_info "Collecting results for target: ${target}"
+
+        # --- AF3 scores ---
+        if [ "$RUN_AF3" -eq 1 ]; then
+            local af3_summary="${CONTROLS_OUTPUT_DIR}/${target}/af3_summary.csv"
+            if [ -f "$af3_summary" ]; then
+                echo "  ${target}/AF3: af3_summary.csv already exists, skipping"
+            else
+                echo "  ${target}/AF3: collecting scores"
+                local af3_header_written=0
+                for control_dir in "${CONTROLS_OUTPUT_DIR}/${target}"/control_*/; do
+                    [ ! -d "$control_dir" ] && continue
+                    local cid
+                    cid=$(basename "$control_dir")
+                    local af3_out="${control_dir}/AF3/output"
+                    [ ! -d "$af3_out" ] && continue
+
+                    local tmp_af3_dir
+                    tmp_af3_dir=$(mktemp -d)
+                    python "$SCRIPT_ROOT/af3_scores.py" \
+                        --af3-results-folder "$af3_out" \
+                        --output-dir "$tmp_af3_dir" 2>/dev/null || { rm -rf "$tmp_af3_dir"; continue; }
+
+                    local tmp_csv="$tmp_af3_dir/summary.csv"
+                    if [ -f "$tmp_csv" ]; then
+                        if [ "$af3_header_written" -eq 0 ]; then
+                            head -1 "$tmp_csv" > "$af3_summary"
+                            af3_header_written=1
+                        fi
+                        tail -n +2 "$tmp_csv" >> "$af3_summary"
+                    fi
+                    rm -rf "$tmp_af3_dir"
+                done
+                [ -f "$af3_summary" ] && echo "  ${target}/AF3: wrote $af3_summary"
+            fi
+        fi
+
+        # --- Boltz2 scores ---
+        if [ "$RUN_BOLTZ2" -eq 1 ]; then
+            local boltz2_summary="${CONTROLS_OUTPUT_DIR}/${target}/boltz2_summary.csv"
+            if [ -f "$boltz2_summary" ]; then
+                echo "  ${target}/Boltz2: boltz2_summary.csv already exists, skipping"
+            else
+                echo "  ${target}/Boltz2: collecting scores"
+                local boltz2_header_written=0
+                for control_dir in "${CONTROLS_OUTPUT_DIR}/${target}"/control_*/; do
+                    [ ! -d "$control_dir" ] && continue
+                    local cid
+                    cid=$(basename "$control_dir")
+                    local boltz_out="${control_dir}/Boltz2/output"
+                    [ ! -d "$boltz_out" ] && continue
+
+                    # Create temp SMILES CSV for this control from controls.csv
+                    local tmp_smiles
+                    tmp_smiles=$(mktemp --suffix=.csv)
+                    local ctrl_num="${cid#control_}"
+                    # Extract the matching row (0-indexed control_id maps to line ctrl_num+2 in CSV)
+                    local line_num=$((ctrl_num + 2))
+                    head -1 "$CONTROLS_CSV" > "$tmp_smiles"
+                    sed -n "${line_num}p" "$CONTROLS_CSV" >> "$tmp_smiles"
+
+                    local tmp_boltz_dir
+                    tmp_boltz_dir=$(mktemp -d)
+                    python "$SCRIPT_ROOT/boltz2_scores.py" \
+                        --boltz-results-folder "$boltz_out" \
+                        --output-dir "$tmp_boltz_dir" \
+                        --smiles "$tmp_smiles" 2>/dev/null || { rm -rf "$tmp_boltz_dir" "$tmp_smiles"; continue; }
+
+                    local tmp_csv="$tmp_boltz_dir/summary.csv"
+                    if [ -f "$tmp_csv" ]; then
+                        if [ "$boltz2_header_written" -eq 0 ]; then
+                            head -1 "$tmp_csv" > "$boltz2_summary"
+                            boltz2_header_written=1
+                        fi
+                        tail -n +2 "$tmp_csv" >> "$boltz2_summary"
+                    fi
+                    rm -rf "$tmp_boltz_dir" "$tmp_smiles"
+                done
+                [ -f "$boltz2_summary" ] && echo "  ${target}/Boltz2: wrote $boltz2_summary"
+            fi
+        fi
+
+        # --- Vina scores ---
+        if [ "$RUN_VINA" -eq 1 ]; then
+            local vina_results="${CONTROLS_OUTPUT_DIR}/${target}/vina_results.csv"
+            if [ -f "$vina_results" ]; then
+                echo "  ${target}/Vina: vina_results.csv already exists, skipping"
+            else
+                echo "  ${target}/Vina: collecting scores"
+                local vina_header_written=0
+                for control_dir in "${CONTROLS_OUTPUT_DIR}/${target}"/control_*/; do
+                    [ ! -d "$control_dir" ] && continue
+                    local vina_out="${control_dir}/Vina/output"
+                    local vina_in="${control_dir}/input"
+                    [ ! -d "$vina_out" ] && continue
+
+                    local tmp_vina_dir
+                    tmp_vina_dir=$(mktemp -d)
+                    python "$SCRIPT_ROOT/vina_scores.py" \
+                        --vina-results-folder "$vina_out" \
+                        --output-dir "$tmp_vina_dir" \
+                        --input-dir "$vina_in" 2>/dev/null || { rm -rf "$tmp_vina_dir"; continue; }
+
+                    local tmp_csv="$tmp_vina_dir/results.csv"
+                    if [ -f "$tmp_csv" ]; then
+                        if [ "$vina_header_written" -eq 0 ]; then
+                            head -1 "$tmp_csv" > "$vina_results"
+                            vina_header_written=1
+                        fi
+                        tail -n +2 "$tmp_csv" >> "$vina_results"
+                    fi
+                    rm -rf "$tmp_vina_dir"
+                done
+                [ -f "$vina_results" ] && echo "  ${target}/Vina: wrote $vina_results"
+            fi
+        fi
+
+        # --- PBSA scores ---
+        if [ "$RUN_MD_PBSA" -eq 1 ]; then
+            local pbsa_summary="${CONTROLS_OUTPUT_DIR}/${target}/pbsa_summary.csv"
+            if [ -f "$pbsa_summary" ]; then
+                echo "  ${target}/PBSA: pbsa_summary.csv already exists, skipping"
+            else
+                echo "  ${target}/PBSA: collecting scores"
+                local pbsa_header_written=0
+                for control_dir in "${CONTROLS_OUTPUT_DIR}/${target}"/control_*/; do
+                    [ ! -d "$control_dir" ] && continue
+                    local cid
+                    cid=$(basename "$control_dir")
+                    local pbsa_dir="${control_dir}/MD_PBSA/PBSA"
+                    [ ! -d "$pbsa_dir" ] && continue
+
+                    local tmp_pbsa_dir
+                    tmp_pbsa_dir=$(mktemp -d)
+                    bash "$SCRIPT_ROOT/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
+
+                    # Map SMILES using controls.csv
+                    if [ -f "$tmp_pbsa_dir/tmp.csv" ]; then
+                        python "$SCRIPT_ROOT/pbsa/mapping_smiles.py" \
+                            --collected "$tmp_pbsa_dir/tmp.csv" \
+                            --smiles_csv "$CONTROLS_CSV" \
+                            --outdir "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
+                    fi
+
+                    local tmp_csv="$tmp_pbsa_dir/summary.csv"
+                    if [ -f "$tmp_csv" ]; then
+                        if [ "$pbsa_header_written" -eq 0 ]; then
+                            head -1 "$tmp_csv" > "$pbsa_summary"
+                            pbsa_header_written=1
+                        fi
+                        tail -n +2 "$tmp_csv" >> "$pbsa_summary"
+                    fi
+                    rm -rf "$tmp_pbsa_dir"
+                done
+                [ -f "$pbsa_summary" ] && echo "  ${target}/PBSA: wrote $pbsa_summary"
+            fi
+        fi
+
+    done
+
+    log_info "Control results collection completed"
+}
+
+# ============================================================================
 # Prerequisite Checks
 # ============================================================================
 
@@ -772,8 +985,8 @@ Input File Format (controls.csv):
 
 Prerequisites:
   - For Boltz2: Prefolded structures must exist at:
-    /home/yangl_pacagen_com/{target}/boltz2_tmp/boltz_results_{target}/msa/{target}_0.csv
-    Run 'prefold_boltz2' from Snakefile first
+    {task_root}/{target}/fine_screening/Boltz2/prefold/boltz_results_{target}/msa/{target}_0.csv
+    Run 'run_prefold_boltz2.sh' first
 
   - For AF3: Prefolded structures must exist at:
     {task_root}/{target}/fine_screening/AF3/prefold/{target_lower}/{target_lower}_data.json
@@ -788,6 +1001,8 @@ Options:
   --skip-af3           Skip AlphaFold3 workflow
   --skip-diffdock      Skip DiffDock workflow
   --skip-md-pbsa       Skip MD+PBSA workflow
+  --collect-only       Skip job submission, only collect results from completed jobs
+  --poll-interval SEC  Set SLURM polling interval in seconds (default: 300)
   --help               Show this help message
 
 Examples:
@@ -799,6 +1014,9 @@ Examples:
 
   # Use custom task root
   $0 --task-root /path/to/data
+
+  # Collect results only (after jobs have completed)
+  $0 --collect-only --task-root /path/to/data
 
 Configuration:
   Task Root: $TASK_ROOT
@@ -870,6 +1088,14 @@ while [[ $# -gt 0 ]]; do
             RUN_MD_PBSA=0
             shift
             ;;
+        --collect-only)
+            COLLECT_ONLY=1
+            shift
+            ;;
+        --poll-interval)
+            POLL_INTERVAL="$2"
+            shift 2
+            ;;
         --help)
             show_help
             exit 0
@@ -889,75 +1115,95 @@ echo "=========================================="
 echo ""
 echo "Task Root: $TASK_ROOT"
 echo "Controls CSV: $CONTROLS_CSV"
+echo "Collect only: $([ $COLLECT_ONLY -eq 1 ] && echo "Yes" || echo "No")"
 echo ""
 
-# Check prerequisites
-if ! check_prerequisites; then
-    log_error "Prerequisites check failed. Please fix the issues and try again."
-    exit 1
+if [ "$COLLECT_ONLY" -eq 1 ]; then
+    # --- Collect-only mode ---
+    mkdir -p "$CONTROLS_OUTPUT_DIR"
+    collect_control_results
+else
+    # --- Normal mode: check prerequisites, submit jobs, poll, collect ---
+
+    # Check prerequisites
+    if ! check_prerequisites; then
+        log_error "Prerequisites check failed. Please fix the issues and try again."
+        exit 1
+    fi
+
+    # Create main output directory
+    mkdir -p "$CONTROLS_OUTPUT_DIR"
+
+    # Clear previous job lists
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt"
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt"
+
+    # Read controls CSV and process each control
+    log_info "Processing control molecules"
+
+    CONTROL_ID=0
+    while IFS=, read -r target smiles; do
+        # Skip header
+        if [ "$target" == "target" ]; then
+            continue
+        fi
+
+        log_info "Processing control ${CONTROL_ID}: target=${target}, SMILES=${smiles}"
+
+        # Setup directories
+        TARGET_DIR=$(setup_control_dirs "$target" "$CONTROL_ID")
+
+        # Submit workflows
+        if [ $RUN_VINA -eq 1 ]; then
+            submit_vina_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
+        fi
+
+        if [ $RUN_BOLTZ2 -eq 1 ]; then
+            submit_boltz2_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
+        fi
+
+        if [ $RUN_AF3 -eq 1 ]; then
+            submit_af3_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
+        fi
+
+        if [ $RUN_DIFFDOCK -eq 1 ]; then
+            submit_diffdock_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
+        fi
+
+        if [ $RUN_MD_PBSA -eq 1 ]; then
+            submit_md_pbsa_control "$target" "$CONTROL_ID" "$TARGET_DIR" || true
+        fi
+
+        CONTROL_ID=$((CONTROL_ID + 1))
+
+    done < "$CONTROLS_CSV"
+
+    # Summary
+    log_info "Control workflow submission completed!"
+    echo "Processed $CONTROL_ID control molecules"
+    echo ""
+    echo "Job IDs saved to:"
+    echo "  Vina:     ${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt"
+    echo "  Boltz2:   ${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
+    echo "  AF3:      ${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
+    echo "  DiffDock: ${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
+    echo "  MD+PBSA:  ${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt"
+    echo ""
+
+    # Wait for all SLURM jobs to complete
+    log_info "Waiting for all SLURM jobs to complete..."
+    wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt" "Vina"
+    wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt" "Boltz2"
+    wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt" "AF3"
+    wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt" "DiffDock"
+    wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt" "MD+PBSA"
+
+    # Collect results
+    collect_control_results
 fi
 
-# Create main output directory
-mkdir -p "$CONTROLS_OUTPUT_DIR"
-
-# Clear previous job lists
-> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt"
-> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
-> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
-> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
-> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt"
-
-# Read controls CSV and process each control
-log_info "Processing control molecules"
-
-CONTROL_ID=0
-while IFS=, read -r target smiles; do
-    # Skip header
-    if [ "$target" == "target" ]; then
-        continue
-    fi
-
-    log_info "Processing control ${CONTROL_ID}: target=${target}, SMILES=${smiles}"
-
-    # Setup directories
-    TARGET_DIR=$(setup_control_dirs "$target" "$CONTROL_ID")
-
-    # Submit workflows
-    if [ $RUN_VINA -eq 1 ]; then
-        submit_vina_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
-    fi
-
-    if [ $RUN_BOLTZ2 -eq 1 ]; then
-        submit_boltz2_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
-    fi
-
-    if [ $RUN_AF3 -eq 1 ]; then
-        submit_af3_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
-    fi
-
-    if [ $RUN_DIFFDOCK -eq 1 ]; then
-        submit_diffdock_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
-    fi
-
-    if [ $RUN_MD_PBSA -eq 1 ]; then
-        submit_md_pbsa_control "$target" "$CONTROL_ID" "$TARGET_DIR" || true
-    fi
-
-    CONTROL_ID=$((CONTROL_ID + 1))
-
-done < "$CONTROLS_CSV"
-
-# Summary
-log_info "Control workflow submission completed!"
-echo "Processed $CONTROL_ID control molecules"
-echo ""
-echo "Job IDs saved to:"
-echo "  Vina:     ${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt"
-echo "  Boltz2:   ${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
-echo "  AF3:      ${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
-echo "  DiffDock: ${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
-echo "  MD+PBSA:  ${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt"
-echo ""
-echo "Monitor jobs with: squeue -u \$USER"
 echo "Check outputs in: ${CONTROLS_OUTPUT_DIR}/"
 echo ""

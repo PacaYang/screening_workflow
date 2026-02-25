@@ -446,17 +446,10 @@ stage_collect_results() {
             if [ -f "$af3_summary" ]; then
                 echo "  ${protein}/AF3: summary.csv already exists, skipping"
             else
-                echo "  ${protein}/AF3: decompressing archives"
-                local af3_out="${base}/fine_screening/AF3/output"
-                for f in "${af3_out}"/batch_*.tar.gz; do
-                    [ -f "$f" ] && tar -xzf "$f" -C "${af3_out}/"
-                done
                 echo "  ${protein}/AF3: collecting scores"
                 python "$SCRIPT_DIR/af3_scores.py" \
-                    --af3-results-folder "${af3_out}" \
+                    --af3-results-folder "${base}/fine_screening/AF3/output" \
                     --output-dir "${base}/fine_screening/AF3"
-                echo "  ${protein}/AF3: cleaning up archives"
-                rm -f "${af3_out}"/batch_*.tar.gz
             fi
         fi
 
@@ -476,8 +469,6 @@ stage_collect_results() {
                     --boltz-results-folder "${boltz_out}" \
                     --output-dir "${base}/fine_screening/Boltz2" \
                     --smiles "$selected"
-                echo "  ${protein}/Boltz2: cleaning up archives"
-                rm -f "${boltz_out}"/batch_*.tar.gz
             fi
         fi
 

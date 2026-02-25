@@ -57,8 +57,8 @@ submit_boltz2_batch() {
     local protein=$1
     local batch_id=$2
 
-    local INPUT_DIR="/home/yangl_pacagen_com/${protein}/boltz2_tmp/input"
-    local LOG_DIR="/home/yangl_pacagen_com/${protein}/boltz2_tmp/logs"
+    local INPUT_DIR="${TASK_ROOT}/${protein}/fine_screening/Boltz2/input"
+    local LOG_DIR="${TASK_ROOT}/${protein}/fine_screening/Boltz2/logs"
     local FINE_DIR="${TASK_ROOT}/${protein}/fine_screening"
     local OUTPUT_DIR="${FINE_DIR}/Boltz2/output"
     local TOKEN_DIR="${OUTPUT_DIR}/token"
@@ -211,7 +211,7 @@ for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
     # Check if input token exists (prerequisite)
-    INPUT_TOKEN="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/boltz_input.done"
+    INPUT_TOKEN="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/boltz_input.done"
     if [ ! -f "$INPUT_TOKEN" ]; then
         log_error "Input token not found for ${PROTEIN}: ${INPUT_TOKEN}"
         log_error "Please run the input preparation step first"

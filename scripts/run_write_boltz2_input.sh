@@ -47,11 +47,11 @@ PROTEINS=$(get_proteins)
 for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
-    OUTDIR="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/input"
+    OUTDIR="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/input"
     TOKEN="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/boltz_input.done"
-    MSA="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
+    MSA="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/prefold/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
     SELECTED="${TASK_ROOT}/${PROTEIN}/initial_screening/selected.csv"
-    CONFIDENCE="/home/yangl_pacagen_com/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
+    CONFIDENCE="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/prefold/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
 
     if [ -f "$TOKEN" ]; then
         log_info "Already completed for ${PROTEIN}, skipping"
