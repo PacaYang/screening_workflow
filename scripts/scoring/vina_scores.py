@@ -28,9 +28,17 @@ def collect_results(path):
             box_match = re.match(r'box(\d+)', parts[-2])
             box = box_match.group(1) if box_match else '0'
         elif len(parts) >= 3:
-            folder = parts[-3].split('_')[-1]
-            idx = parts[-2].replace('lig', '')
-            box = '0'
+            box_match_3 = re.match(r'box(\d+)', parts[-2])
+            if box_match_3:
+                # lig{i}/box{j}/docking_affinities.txt (no partition folder)
+                folder = '0'
+                idx = parts[-3].replace('lig', '')
+                box = box_match_3.group(1)
+            else:
+                # {part}/lig{i}/docking_affinities.txt (old layout)
+                folder = parts[-3].split('_')[-1]
+                idx = parts[-2].replace('lig', '')
+                box = '0'
         else:
             # Fallback: try original parsing
             folder = (file.split('/')[-3]).split('_')[-1]
@@ -50,15 +58,21 @@ def collect_results(path):
 def process_results(scores_df, input_folder):
     df_dicts = {}
 
-    smilesfile_list = glob.glob(f"{input_folder}/*.csv")
-    for i in range(0,len(smilesfile_list)):
-        df_dicts[str(i)] = pd.read_csv(f"{input_folder}/input_part_{i}.csv")
+    smilesfile_list = glob.glob(f"{input_folder}/input_part_*.csv")
+    if smilesfile_list:
+        for i in range(0, len(smilesfile_list)):
+            df_dicts[str(i)] = pd.read_csv(f"{input_folder}/input_part_{i}.csv")
+    else:
+        # Fallback: load any CSV in the input folder (e.g. control.csv)
+        all_csvs = sorted(glob.glob(f"{input_folder}/*.csv"))
+        for i, csv_path in enumerate(all_csvs):
+            df_dicts[str(i)] = pd.read_csv(csv_path)
     
-    def find_SMILES(input):
+    def find_SMILES(row):
         try:
-            smiles = df_dicts[str(input[0])].iloc[int(input[1])]['ligand_description']
+            smiles = df_dicts[str(row['folder'])].iloc[int(row['idx'])]['ligand_description']
         except:
-            smiles = df_dicts[str(input[0])].iloc[int(input[1])]['SMILES']
+            smiles = df_dicts[str(row['folder'])].iloc[int(row['idx'])]['SMILES']
         return smiles
 
     scores_df['SMILES'] = scores_df[['folder', 'idx']].apply(lambda x: find_SMILES(x), axis=1)

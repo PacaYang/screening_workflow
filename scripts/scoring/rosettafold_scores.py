@@ -14,16 +14,9 @@ def process_extracted(extracted_dir, protein_name):
     """Process scores from an extracted directory on disk."""
     rows = []
 
-    # Build yaml map: config_compound_X.yaml -> SMILES
-    yaml_map = {}
-    for yf in glob(os.path.join(extracted_dir, "config_compound_*.yaml")):
-        match = re.search(r'config_compound_(\d+)\.yaml$', yf)
-        if match:
-            yaml_map[match.group(1)] = yf
-
     # Find all _aux.pt files
     aux_files = glob(os.path.join(extracted_dir, "compound_*", "*_aux.pt"))
-    print(f"Found {len(aux_files)} aux.pt files, {len(yaml_map)} config YAMLs")
+    print(f"Found {len(aux_files)} aux.pt files")
 
     for aux_path in tqdm(aux_files, desc="Processing compounds"):
         match = re.search(r'compound_(\d+)/', aux_path)
@@ -31,6 +24,7 @@ def process_extracted(extracted_dir, protein_name):
             continue
         cid = match.group(1)
         folder = f"compound_{cid}"
+        compound_dir = os.path.dirname(aux_path)
 
         try:
             data = torch.load(aux_path, map_location='cpu', weights_only=False)
@@ -38,14 +32,12 @@ def process_extracted(extracted_dir, protein_name):
             print(f"Warning: could not load {aux_path}: {e}")
             continue
 
+        # Read SMILES from smiles.txt
         smiles = ""
-        if cid in yaml_map:
-            try:
-                with open(yaml_map[cid]) as f:
-                    cfg = yaml.safe_load(f)
-                smiles = cfg.get('sm_inputs', {}).get('B', {}).get('input', '')
-            except Exception:
-                pass
+        smiles_file = os.path.join(compound_dir, 'smiles.txt')
+        if os.path.exists(smiles_file):
+            with open(smiles_file, 'r') as f:
+                smiles = f.read().strip()
 
         rows.append({
             'folder': folder,

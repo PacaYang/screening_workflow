@@ -176,16 +176,47 @@ echo "  Successful: \$SUCCESS_COUNT"
 echo "  Failed: \$FAIL_COUNT"
 echo ""
 
-# Compress results
-echo "Compressing results for batch ${batch_id}..."
-cd \$BATCH_LOCAL_OUT
+# Copy results directly to output directory
+echo "Copying results for batch ${batch_id}..."
 
-# Find and compress only the relevant AF3 output files
-find . \\( -name "*_data.json" -o -name "*_summary_confidences.json" -o -name "*_confidences.json" -o -name "*_model.cif" \\) -print0 | \\
-    tar -czf batch_${batch_id}.tar.gz --null -T -
+for job_dir in \$BATCH_LOCAL_OUT/job_*; do
+    if [ ! -d "\$job_dir" ]; then
+        continue
+    fi
 
-# Copy tar file to final output directory
-cp batch_${batch_id}.tar.gz "${OUTPUT_DIR}/"
+    job_num=\$(basename "\$job_dir" | sed 's/job_//')
+
+    # Find the compound directory (AF3 creates a subdirectory with compound name)
+    compound_dir=\$(find "\$job_dir" -mindepth 1 -maxdepth 1 -type d | head -1)
+
+    if [ -z "\$compound_dir" ] || [ ! -d "\$compound_dir" ]; then
+        echo "Warning: No compound directory found in \$job_dir"
+        continue
+    fi
+
+    job_output="${OUTPUT_DIR}/job_\${job_num}"
+    mkdir -p "\$job_output"
+
+    # Extract and save SMILES (but don't copy the data.json file)
+    data_json=\$(find "\$compound_dir" -name "*_data.json" | head -1)
+    if [ -f "\$data_json" ]; then
+        python3 -c "
+import json
+with open('\$data_json') as f:
+    data = json.load(f)
+smiles = data['sequences'][-1]['ligand']['smiles']
+with open('\$job_output/smiles.txt', 'w') as f:
+    f.write(smiles)
+" 2>/dev/null || echo "Warning: Could not extract SMILES for job \$job_num"
+    fi
+
+    # Copy only the confidence files (actual prediction scores)
+    cp "\$compound_dir"/*_summary_confidences.json "\$job_output/" 2>/dev/null || true
+    cp "\$compound_dir"/*_confidences.json "\$job_output/" 2>/dev/null || true
+    cp "\$compound_dir"/*_model.cif "\$job_output/" 2>/dev/null || true
+
+    echo "  Copied results for job \$job_num"
+done
 
 # Create per-compound completion tokens (for Snakemake compatibility)
 for i in \$(seq \$START_IDX \$((\$END_IDX - 1))); do
@@ -196,7 +227,7 @@ done
 rm -rf \$BATCH_LOCAL_OUT
 
 echo "Job completed at: \$(date)"
-echo "Results saved to: ${OUTPUT_DIR}/batch_${batch_id}.tar.gz"
+echo "Results copied to: ${OUTPUT_DIR}/"
 EOF
 
     # Submit the job

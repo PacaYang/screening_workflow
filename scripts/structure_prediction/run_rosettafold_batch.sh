@@ -20,7 +20,7 @@ SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
 
 # RoseTTAFold-All-Atom paths
 RFAA_ROOT="/home/yangl_pacagen_com/Applications/RoseTTAFold-All-Atom"
-RFAA_CONDA_ENV="RFAA_test"
+RFAA_CONDA_ENV="${MASTER_RFAA_CONDA_ENV:-RFAA}"
 ROSETTA_DB_UR30="${MASTER_ROSETTA_DB_UR30:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/UniRef30_2020_06/UniRef30_2020_06}"
 ROSETTA_DB_BFD="${MASTER_ROSETTA_DB_BFD:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt}"
 
@@ -30,7 +30,7 @@ N_BATCHES=10
 # SLURM configuration for protein-ligand prediction
 LIGAND_TIME_LIMIT="48:00:00"
 LIGAND_MEMORY="15G"
-LIGAND_CPUS=4
+LIGAND_CPUS=2
 LIGAND_GPU_REQUEST=""
 LIGAND_PARTITION="g24"
 
@@ -111,7 +111,7 @@ echo "Processing protein: PROTEIN_PLACEHOLDER, batch: BATCH_ID_PLACEHOLDER"
 
 # Activate environment
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
-conda activate RFAA_test
+conda activate RFAA_CONDA_ENV_PLACEHOLDER
 
 # Set database paths for MSA generation
 export DB_UR30="DB_UR30_PLACEHOLDER"
@@ -214,6 +214,9 @@ defaults:
 job_name: "PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
 output_path: "${COMPOUND_OUTPUT}"
 
+database_params:
+  hhdb: /home/yangl_pacagen_com/Applications/model_weights/rosetta_db/pdb100_2021Mar03/pdb100_2021Mar03
+
 protein_inputs:
   A:
     fasta_file: "FASTA_FILE_PLACEHOLDER"
@@ -240,10 +243,53 @@ echo "Batch processing complete:"
 echo "  Success: ${SUCCESS_COUNT}"
 echo "  Failed: ${FAIL_COUNT}"
 
-# Compress and copy results
+# Copy results directly to output directory
 if [ $SUCCESS_COUNT -gt 0 ]; then
-    tar -czf OUTPUT_DIR_PLACEHOLDER/batch_BATCH_ID_PLACEHOLDER.tar.gz -C $LOCAL_OUT .
-    echo "Results compressed to OUTPUT_DIR_PLACEHOLDER/batch_BATCH_ID_PLACEHOLDER.tar.gz"
+    echo "Copying results..."
+
+    for compound_dir in $LOCAL_OUT/compound_*/PROTEIN_PLACEHOLDER_ligand_compound_*; do
+        if [ ! -d "$compound_dir" ]; then
+            continue
+        fi
+
+        # Extract compound ID from directory name
+        compound_id=$(echo "$compound_dir" | grep -oP 'compound_\K\d+' | head -1)
+        if [ -z "$compound_id" ]; then
+            echo "Warning: Could not extract compound ID from $compound_dir"
+            continue
+        fi
+
+        output_dir="OUTPUT_DIR_PLACEHOLDER/compound_${compound_id}"
+        mkdir -p "$output_dir"
+
+        # Extract and save SMILES from config file (but don't copy the config)
+        config_file="$LOCAL_OUT/config_compound_${compound_id}.yaml"
+        if [ -f "$config_file" ]; then
+            python3 -c "
+import yaml
+with open('$config_file') as f:
+    cfg = yaml.safe_load(f)
+smiles = cfg.get('sm_inputs', {}).get('B', {}).get('input', '')
+with open('$output_dir/smiles.txt', 'w') as f:
+    f.write(smiles)
+" 2>/dev/null || echo "Warning: Could not extract SMILES for compound $compound_id"
+        fi
+
+        # Copy aux.pt file (contains scores: mean_plddt, mean_pae, pae_prot, pae_inter)
+        aux_file=$(find "$compound_dir" -name "*_aux.pt" | head -1)
+        if [ -f "$aux_file" ]; then
+            cp "$aux_file" "$output_dir/"
+            echo "  Copied aux.pt for compound $compound_id"
+        fi
+
+        # Copy best PDB structure (typically only one main model)
+        pdb_file=$(find "$compound_dir" -name "*.pdb" | head -1)
+        if [ -f "$pdb_file" ]; then
+            cp "$pdb_file" "$output_dir/structure.pdb"
+        fi
+    done
+
+    echo "Results copied to OUTPUT_DIR_PLACEHOLDER/"
 fi
 
 # Create completion token

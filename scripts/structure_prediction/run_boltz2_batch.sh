@@ -163,16 +163,81 @@ echo "  Successful: \$SUCCESS_COUNT"
 echo "  Failed: \$FAIL_COUNT"
 echo ""
 
-# Compress results
-echo "Compressing results for batch ${batch_id}..."
-cd \$BATCH_LOCAL_OUT
+# Copy results directly to output directory, selecting best model
+echo "Copying results for batch ${batch_id}..."
 
-# Find and compress only the relevant output files (affinity, confidence, models)
-find . \\( -name "affinity_*.json" -o -name "confidence*.json" -o -name "*model*.cif" \\) -print0 | \\
-    tar -czf batch_${batch_id}.tar.gz --null -T -
+for job_dir in \$BATCH_LOCAL_OUT/job_*; do
+    if [ ! -d "\$job_dir" ]; then
+        continue
+    fi
 
-# Copy tar file to final output directory
-cp batch_${batch_id}.tar.gz "${OUTPUT_DIR}/"
+    job_num=\$(basename "\$job_dir" | sed 's/job_//')
+    job_output="${OUTPUT_DIR}/job_\${job_num}"
+    mkdir -p "\$job_output"
+
+    # Extract SMILES from input YAML file
+    yaml_file="${INPUT_DIR}/\${job_num}.yaml"
+    if [ -f "\$yaml_file" ]; then
+        python3 -c "
+import yaml
+with open('\$yaml_file') as f:
+    data = yaml.safe_load(f)
+for seq in data.get('sequences', []):
+    if 'ligand' in seq:
+        smiles = seq['ligand'].get('smiles', '')
+        with open('\$job_output/smiles.txt', 'w') as f:
+            f.write(smiles)
+        break
+" 2>/dev/null || echo "Warning: Could not extract SMILES for job \$job_num"
+    fi
+
+    # Find affinity JSON file
+    affinity_json=\$(find "\$job_dir" -name "affinity_*.json" | head -1)
+
+    if [ -z "\$affinity_json" ] || [ ! -f "\$affinity_json" ]; then
+        echo "Warning: No affinity file found in \$job_dir, copying all files"
+        cp "\$job_dir"/affinity_*.json "\$job_output/" 2>/dev/null || true
+        cp "\$job_dir"/confidence*.json "\$job_output/" 2>/dev/null || true
+        cp "\$job_dir"/*model*.cif "\$job_output/" 2>/dev/null || true
+        continue
+    fi
+
+    # Find model with lowest (most negative) affinity
+    best_model=\$(python3 <<PYEOF
+import json
+import sys
+try:
+    with open("\$affinity_json") as f:
+        data = json.load(f)
+    affinities = [(k.replace('affinity_pred_value_', ''), v)
+                  for k, v in data.items()
+                  if k.startswith('affinity_pred_value_')]
+    if affinities:
+        best = min(affinities, key=lambda x: x[1])
+        print(best[0])
+    else:
+        print('0')
+except Exception as e:
+    print('0', file=sys.stderr)
+    sys.exit(1)
+PYEOF
+)
+
+    # Copy JSON files (required by scoring script)
+    cp "\$affinity_json" "\$job_output/" 2>/dev/null || true
+    cp "\$job_dir"/confidence*.json "\$job_output/" 2>/dev/null || true
+
+    # Copy best model CIF file
+    best_cif="\$job_dir/model_\${best_model}.cif"
+    if [ -f "\$best_cif" ]; then
+        cp "\$best_cif" "\$job_output/best_model.cif"
+        echo "  Copied results for job \$job_num (best model: \$best_model)"
+    else
+        # Fallback: copy all models if best not found
+        cp "\$job_dir"/*model*.cif "\$job_output/" 2>/dev/null || true
+        echo "  Copied results for job \$job_num (all models)"
+    fi
+done
 
 # Create completion token
 touch "${TOKEN_DIR}/batch_${batch_id}.done"
@@ -181,7 +246,7 @@ touch "${TOKEN_DIR}/batch_${batch_id}.done"
 rm -rf \$BATCH_LOCAL_OUT
 
 echo "Job completed at: \$(date)"
-echo "Results saved to: ${OUTPUT_DIR}/batch_${batch_id}.tar.gz"
+echo "Results copied to: ${OUTPUT_DIR}/"
 EOF
 
     # Submit the job

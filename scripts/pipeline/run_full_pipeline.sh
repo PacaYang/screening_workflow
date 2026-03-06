@@ -203,7 +203,7 @@ run_stage() {
 # ============================================================================
 
 stage_make_input() {
-    run_or_dry bash "$SCRIPT_DIR/run_make_input.sh"
+    run_or_dry bash "$SCRIPT_DIR/../input/run_make_input.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
 
@@ -227,11 +227,11 @@ stage_make_input() {
 
 stage_initial_screening() {
     # Submit all enabled methods
-    [ "$SKIP_GRAPHDTA" -eq 0 ]  && run_or_dry bash "$SCRIPT_DIR/run_graphdta.sh"
-    [ "$SKIP_HMSA" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_hmsa.sh"
-    [ "$SKIP_COLDDTA" -eq 0 ]   && run_or_dry bash "$SCRIPT_DIR/run_colddta.sh"
-    [ "$SKIP_DRUGLAMP" -eq 0 ]  && run_or_dry bash "$SCRIPT_DIR/run_druglamp.sh"
-    [ "$SKIP_CONPLEX" -eq 0 ]   && run_or_dry bash "$SCRIPT_DIR/run_conplex.sh"
+    [ "$SKIP_GRAPHDTA" -eq 0 ]  && run_or_dry bash "$SCRIPT_DIR/../initial_screening/run_graphdta.sh"
+    [ "$SKIP_HMSA" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/../initial_screening/run_hmsa.sh"
+    [ "$SKIP_COLDDTA" -eq 0 ]   && run_or_dry bash "$SCRIPT_DIR/../initial_screening/run_colddta.sh"
+    [ "$SKIP_DRUGLAMP" -eq 0 ]  && run_or_dry bash "$SCRIPT_DIR/../initial_screening/run_druglamp.sh"
+    [ "$SKIP_CONPLEX" -eq 0 ]   && run_or_dry bash "$SCRIPT_DIR/../initial_screening/run_conplex.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "  [DRY-RUN] Would poll SLURM until all initial screening jobs finish"
@@ -281,7 +281,7 @@ stage_initial_screening() {
 # ============================================================================
 
 stage_compile_summary() {
-    run_or_dry bash "$SCRIPT_DIR/run_compile_summary.sh"
+    run_or_dry bash "$SCRIPT_DIR/../scoring/run_compile_summary.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
 
@@ -307,14 +307,14 @@ stage_compile_summary() {
 stage_prepare_fine() {
     # 4a — Write prefold inputs
     log_info "Stage 4a: Writing prefold inputs"
-    [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPT_DIR/run_write_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_write_prefold_boltz2.sh"
+    [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPT_DIR/../input/run_write_prefold_af3.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/../input/run_write_prefold_boltz2.sh"
 
     # 4b — Submit prefold SLURM jobs
     log_info "Stage 4b: Submitting prefold jobs"
-    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/run_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_prefold_boltz2.sh"
-    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_rosettafold_prefold.sh"
+    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/../structure_prediction/prefold/run_prefold_af3.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/../structure_prediction/prefold/run_prefold_boltz2.sh"
+    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/../structure_prediction/prefold/run_rosettafold_prefold.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "  [DRY-RUN] Would poll SLURM until all prefold jobs finish"
@@ -351,9 +351,9 @@ stage_prepare_fine() {
 
     # 4d — Write fine screening inputs
     log_info "Stage 4d: Writing fine screening inputs"
-    [ "$SKIP_AF3" -eq 0 ]    && bash "$SCRIPT_DIR/run_write_af3_input.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && bash "$SCRIPT_DIR/run_write_boltz2_input.sh"
-    bash "$SCRIPT_DIR/run_split_csv.sh"
+    [ "$SKIP_AF3" -eq 0 ]    && bash "$SCRIPT_DIR/../input/run_write_af3_input.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ] && bash "$SCRIPT_DIR/../input/run_write_boltz2_input.sh"
+    bash "$SCRIPT_DIR/../input/run_split_csv.sh"
 }
 
 # ============================================================================
@@ -363,10 +363,10 @@ stage_prepare_fine() {
 stage_fine_screening() {
     # 5a — Submit AF3, Boltz2, Vina, RoseTTAFold
     log_info "Stage 5a: Submitting AF3, Boltz2, Vina, RoseTTAFold jobs"
-    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/run_af3_batch.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_boltz2_batch.sh"
-    [ "$SKIP_VINA" -eq 0 ]        && run_or_dry bash "$SCRIPT_DIR/run_vina_batch.sh"
-    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_rosettafold_batch.sh"
+    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/../structure_prediction/run_af3_batch.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/../structure_prediction/run_boltz2_batch.sh"
+    [ "$SKIP_VINA" -eq 0 ]        && run_or_dry bash "$SCRIPT_DIR/../docking/run_vina_batch.sh"
+    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/../structure_prediction/run_rosettafold_batch.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "  [DRY-RUN] Would poll AF3/Boltz2/Vina/RoseTTAFold, then submit DiffDock, poll DiffDock, then submit MD+PBSA, poll MD+PBSA"
@@ -397,7 +397,7 @@ stage_fine_screening() {
     # 5c — Submit DiffDock
     if [ "$SKIP_DIFFDOCK" -eq 0 ]; then
         log_info "Stage 5c: Submitting DiffDock jobs"
-        bash "$SCRIPT_DIR/run_diffdock_batch.sh"
+        bash "$SCRIPT_DIR/../docking/run_diffdock_batch.sh"
     fi
 
     # 5d — Wait for DiffDock
@@ -412,7 +412,7 @@ stage_fine_screening() {
     # 5e — Submit MD+PBSA
     if [ "$SKIP_MD_PBSA" -eq 0 ]; then
         log_info "Stage 5e: Submitting MD+PBSA jobs"
-        bash "$SCRIPT_DIR/run_md_pbsa_batch.sh"
+        bash "$SCRIPT_DIR/../md_pbsa/run_md_pbsa_batch.sh"
     fi
 
     # 5f — Wait for MD+PBSA
@@ -446,17 +446,11 @@ stage_collect_results() {
             if [ -f "$af3_summary" ]; then
                 echo "  ${protein}/AF3: summary.csv already exists, skipping"
             else
-                echo "  ${protein}/AF3: decompressing archives"
-                local af3_out="${base}/fine_screening/AF3/output"
-                for f in "${af3_out}"/batch_*.tar.gz; do
-                    [ -f "$f" ] && tar -xzf "$f" -C "${af3_out}/"
-                done
                 echo "  ${protein}/AF3: collecting scores"
-                python "$SCRIPT_DIR/af3_scores.py" \
+                local af3_out="${base}/fine_screening/AF3/output"
+                python "$SCRIPT_DIR/../scoring/af3_scores.py" \
                     --af3-results-folder "${af3_out}" \
                     --output-dir "${base}/fine_screening/AF3"
-                echo "  ${protein}/AF3: cleaning up archives"
-                rm -f "${af3_out}"/batch_*.tar.gz
             fi
         fi
 
@@ -466,18 +460,11 @@ stage_collect_results() {
             if [ -f "$boltz2_summary" ]; then
                 echo "  ${protein}/Boltz2: summary.csv already exists, skipping"
             else
-                echo "  ${protein}/Boltz2: decompressing archives"
-                local boltz_out="${base}/fine_screening/Boltz2/output"
-                for f in "${boltz_out}"/batch_*.tar.gz; do
-                    [ -f "$f" ] && tar -xzf "$f" -C "${boltz_out}/"
-                done
                 echo "  ${protein}/Boltz2: collecting scores"
-                python "$SCRIPT_DIR/boltz2_scores.py" \
+                local boltz_out="${base}/fine_screening/Boltz2/output"
+                python "$SCRIPT_DIR/../scoring/boltz2_scores.py" \
                     --boltz-results-folder "${boltz_out}" \
-                    --output-dir "${base}/fine_screening/Boltz2" \
-                    --smiles "$selected"
-                echo "  ${protein}/Boltz2: cleaning up archives"
-                rm -f "${boltz_out}"/batch_*.tar.gz
+                    --output-dir "${base}/fine_screening/Boltz2"
             fi
         fi
 
@@ -488,7 +475,7 @@ stage_collect_results() {
                 echo "  ${protein}/Vina: results.csv already exists, skipping"
             else
                 echo "  ${protein}/Vina: collecting scores"
-                python "$SCRIPT_DIR/vina_scores.py" \
+                python "$SCRIPT_DIR/../scoring/vina_scores.py" \
                     --vina-results-folder "${base}/fine_screening/Vina/output" \
                     --output-dir "${base}/fine_screening/Vina" \
                     --input-dir "${base}/fine_screening/Vina/input"
@@ -504,9 +491,9 @@ stage_collect_results() {
                 local pbsa_dir="${base}/fine_screening/PBSA/PBSA/PBSA"
                 local pbsa_outdir="${base}/fine_screening/PBSA"
                 echo "  ${protein}/PBSA: extracting results"
-                bash "$SCRIPT_DIR/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$pbsa_outdir"
+                bash "$SCRIPT_DIR/../md_pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$pbsa_outdir"
                 echo "  ${protein}/PBSA: mapping SMILES"
-                python "$SCRIPT_DIR/pbsa/mapping_smiles.py" \
+                python "$SCRIPT_DIR/../md_pbsa/mapping_smiles.py" \
                     --collected "${pbsa_outdir}/tmp.csv" \
                     --smiles_csv "$selected" \
                     --outdir "$pbsa_outdir"

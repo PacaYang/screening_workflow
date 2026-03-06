@@ -23,14 +23,14 @@ RFAA_ROOT="/home/yangl_pacagen_com/Applications/RoseTTAFold-All-Atom"
 RFAA_WEIGHTS="${MASTER_RFAA_WEIGHTS:-/home/yangl_pacagen_com/Applications/model_weights/RoseTTAFold/RFAA_paper_weights.pt}"
 ROSETTA_DB_UR30="${MASTER_ROSETTA_DB_UR30:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/UniRef30_2020_06/UniRef30_2020_06}"
 ROSETTA_DB_BFD="${MASTER_ROSETTA_DB_BFD:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt}"
-RFAA_CONDA_ENV="RFAA_test"
+RFAA_CONDA_ENV="${MASTER_RFAA_CONDA_ENV:-RFAA}"
 
 # SLURM configuration for protein folding
-PROTEIN_TIME_LIMIT="48:00:00"
-PROTEIN_MEMORY="15G"
-PROTEIN_CPUS=2
-PROTEIN_GPU_REQUEST="--gres=gpu:1"
-PROTEIN_PARTITION="g24"
+PROTEIN_TIME_LIMIT="${PROTEIN_TIME_LIMIT:-48:00:00}"
+PROTEIN_MEMORY="${PROTEIN_MEMORY:-15G}"
+PROTEIN_CPUS=${PROTEIN_CPUS:-2}
+PROTEIN_GPU_REQUEST="${PROTEIN_GPU_REQUEST:---gres=gpu:1}"
+PROTEIN_PARTITION="${PROTEIN_PARTITION:-g24}"
 
 # ============================================================================
 # Functions
@@ -188,7 +188,7 @@ export DB_BFD="DB_BFD_PLACEHOLDER"
 
 # Activate environment
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
-conda activate RFAA_test
+conda activate RFAA_CONDA_ENV_PLACEHOLDER
 
 # Change to RFAA directory (required for relative paths)
 cd RFAA_ROOT_PLACEHOLDER

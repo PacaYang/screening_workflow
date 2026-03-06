@@ -28,17 +28,17 @@ CONTROLS_OUTPUT_DIR="${TASK_ROOT}/Controls"
 SCRIPT_ROOT="${SCRIPT_DIR}"
 
 # Tools and executables
-VINA_EXE="${SCRIPT_ROOT}/docking.py"
+VINA_EXE="${SCRIPT_ROOT}/docking/docking.py"
 BOLTZ2_EXE="/home/yangl_pacagen_com/miniconda3/envs/boltz_test/bin/boltz"
 AF3_EXE="/home/yangl_pacagen_com/Applications/alphafold3/run_alphafold.py"
 AF3_WEIGHT_DIR="${MASTER_AF3_WEIGHT_DIR:-/home/yangl_pacagen_com/Applications/model_weights/AF3}"
 AF3_DB_DIR="${MASTER_AF3_DB_DIR:-/home/yangl_pacagen_com/Applications/model_weights/af3_db}"
 DIFFDOCK_DIR="/home/yangl_pacagen_com/Applications/DiffDock/"
 DIFFDOCK_CONFIG="/home/yangl_pacagen_com/Applications/DiffDock/default_inference_args.yaml"
-MD_SCRIPT="${SCRIPT_ROOT}/pbsa/run_pbsa_md.sh"
+MD_SCRIPT="${SCRIPT_ROOT}/md_pbsa/run_pbsa_md.sh"
 PBSA_EXE="/home/yangl_pacagen_com/miniconda3/envs/gmxMMPBSA_test/bin/gmx_MMPBSA"
 GMX_RC="/home/yangl_pacagen_com/Applications/gromacs-2025.3/bin/GMXRC"
-PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/pbsa"
+PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/md_pbsa"
 
 # Workflow control flags (set to 1 to enable, 0 to disable)
 RUN_VINA=1
@@ -53,20 +53,20 @@ POLL_INTERVAL=300
 
 # SLURM configuration
 VINA_TIME_LIMIT="08:00:00"
-VINA_MEMORY="16G"
-VINA_CPUS=4
+VINA_MEMORY="15G"
+VINA_CPUS=2
 
 BOLTZ2_TIME_LIMIT="48:00:00"
 BOLTZ2_MEMORY="15G"
-BOLTZ2_CPUS=4
+BOLTZ2_CPUS=2
 
 AF3_TIME_LIMIT="48:00:00"
-AF3_MEMORY="20G"
-AF3_CPUS=8
+AF3_MEMORY="15G"
+AF3_CPUS=2
 
 DIFFDOCK_TIME_LIMIT="48:00:00"
 DIFFDOCK_MEMORY="15G"
-DIFFDOCK_CPUS=4
+DIFFDOCK_CPUS=2
 
 MD_PBSA_TIME_LIMIT="240:00:00"
 MD_PBSA_CPUS=64
@@ -129,10 +129,11 @@ wait_for_slurm_jobs() {
 get_box_params() {
     local protein=$1
 
-    # Use Python to parse the docking box
-    python <<EOF
+    # Use Python to parse the docking box and output as JSON
+    python3 <<EOF
 import pandas as pd
 import ast
+import json
 
 df = pd.read_csv("${SEQUENCES_CSV}")
 row = df.loc[df['name'] == "${protein}"]
@@ -143,17 +144,16 @@ if row.empty:
 
 cell = row['docking box'].iloc[0]
 
-# Parse the box specification
 if isinstance(cell, str):
     vals = ast.literal_eval(cell)
 else:
     vals = list(cell)
 
-center = vals[:3]
-size = vals[3:]
+# Normalize flat list to nested: [6] -> [[6]]
+if vals and not isinstance(vals[0], (list, tuple)):
+    vals = [vals]
 
-print(" ".join(map(str, center)))
-print(" ".join(map(str, size)))
+print(json.dumps(vals))
 EOF
 }
 
@@ -191,18 +191,10 @@ submit_vina_control() {
         return 1
     fi
 
-    # Get docking box parameters
-    BOX_PARAMS=$(get_box_params "$target")
-    if [ $? -ne 0 ]; then
+    # Get docking box parameters as JSON
+    BOXES_JSON=$(get_box_params "$target")
+    if [ $? -ne 0 ] || [ -z "$BOXES_JSON" ]; then
         log_error "Failed to get box parameters for ${target}"
-        return 1
-    fi
-
-    BOX_CENTER=$(echo "$BOX_PARAMS" | head -1)
-    BOX_SIZE=$(echo "$BOX_PARAMS" | tail -1)
-
-    if [ -z "$BOX_CENTER" ] || [ -z "$BOX_SIZE" ]; then
-        log_error "Failed to extract docking box parameters for ${target}"
         return 1
     fi
 
@@ -226,8 +218,7 @@ echo "Job started at: \$(date)"
 echo "Running on host: \$(hostname)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Control: ${target} control_${control_id}"
-echo "Docking box center: ${BOX_CENTER}"
-echo "Docking box size: ${BOX_SIZE}"
+echo "Docking boxes: ${BOXES_JSON}"
 
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate vina_test
@@ -237,8 +228,7 @@ mkdir -p "${OUTPUT_DIR}"
 python "${VINA_EXE}" \\
     --smiles "${INPUT_CSV}" \\
     --pdb "${PDB_FILE}" \\
-    --box-center ${BOX_CENTER} \\
-    --box-size ${BOX_SIZE} \\
+    --boxes '${BOXES_JSON}' \\
     --output "${OUTPUT_DIR}" \\
     --smiles-col "ligand_description"
 
@@ -281,12 +271,19 @@ submit_boltz2_control() {
     # Prefolded MSA file from prefold_boltz2
     local MSA_FILE="${TASK_ROOT}/${target}/fine_screening/Boltz2/prefold/boltz_results_${target}/msa/${target}_0.csv"
 
+    # Backup: check ~/{target}/boltz2_tmp/
+    if [ ! -f "$MSA_FILE" ]; then
+        MSA_FILE="${HOME}/${target}/boltz2_tmp/boltz_results_${target}/msa/${target}_0.csv"
+    fi
+
     mkdir -p "$INPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
     # Check if prefolded MSA exists
     if [ ! -f "$MSA_FILE" ]; then
-        log_error "Prefolded MSA not found for ${target}: ${MSA_FILE}"
+        log_error "Prefolded MSA not found for ${target}"
+        log_error "Checked: ${TASK_ROOT}/${target}/fine_screening/Boltz2/prefold/boltz_results_${target}/msa/${target}_0.csv"
+        log_error "Checked: ${HOME}/${target}/boltz2_tmp/boltz_results_${target}/msa/${target}_0.csv"
         log_error "Please run prefold_boltz2 first"
         return 1
     fi
@@ -297,7 +294,7 @@ submit_boltz2_control() {
     echo "$smiles" >> "$TEMP_SMILES_CSV"
 
     # Use gen_boltz_yaml.py to create YAML with prefolded MSA
-    python "${SCRIPT_ROOT}/gen_boltz_yaml.py" \
+    python "${SCRIPT_ROOT}/input/gen_boltz_yaml.py" \
         --output "$INPUT_DIR" \
         --msa "$MSA_FILE" \
         --smiles-path "$TEMP_SMILES_CSV" \
@@ -380,8 +377,7 @@ submit_af3_control() {
     local JSON_FILE="${INPUT_DIR}/control.json"
 
     # Prefolded structure with MSA and templates from prefold_af3
-    local TARGET_LOWER=$(echo "$target" | tr '[:upper:]' '[:lower:]')
-    local PREFOLD_JSON="${TASK_ROOT}/${target}/fine_screening/AF3/prefold/${TARGET_LOWER}/${TARGET_LOWER}_data.json"
+    local PREFOLD_JSON="${TASK_ROOT}/${target}/fine_screening/AF3/prefold/${target}/${target}_data.json"
 
     mkdir -p "$INPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
@@ -399,7 +395,7 @@ submit_af3_control() {
     echo "$smiles" >> "$TEMP_SMILES_CSV"
 
     # Use gen_af3_json_with_cmpds.py to create JSON with prefolded data
-    python "${SCRIPT_ROOT}/gen_af3_json_with_cmpds.py" \
+    python "${SCRIPT_ROOT}/input/gen_af3_json_with_cmpds.py" \
         --output-dir "$INPUT_DIR" \
         --input-json "$PREFOLD_JSON" \
         --smiles-file "$TEMP_SMILES_CSV" \
@@ -774,7 +770,7 @@ collect_control_results() {
 
                     local tmp_af3_dir
                     tmp_af3_dir=$(mktemp -d)
-                    python "$SCRIPT_ROOT/af3_scores.py" \
+                    python "$SCRIPT_ROOT/scoring/af3_scores.py" \
                         --af3-results-folder "$af3_out" \
                         --output-dir "$tmp_af3_dir" 2>/dev/null || { rm -rf "$tmp_af3_dir"; continue; }
 
@@ -818,7 +814,7 @@ collect_control_results() {
 
                     local tmp_boltz_dir
                     tmp_boltz_dir=$(mktemp -d)
-                    python "$SCRIPT_ROOT/boltz2_scores.py" \
+                    python "$SCRIPT_ROOT/scoring/boltz2_scores.py" \
                         --boltz-results-folder "$boltz_out" \
                         --output-dir "$tmp_boltz_dir" \
                         --smiles "$tmp_smiles" 2>/dev/null || { rm -rf "$tmp_boltz_dir" "$tmp_smiles"; continue; }
@@ -853,7 +849,7 @@ collect_control_results() {
 
                     local tmp_vina_dir
                     tmp_vina_dir=$(mktemp -d)
-                    python "$SCRIPT_ROOT/vina_scores.py" \
+                    python "$SCRIPT_ROOT/scoring/vina_scores.py" \
                         --vina-results-folder "$vina_out" \
                         --output-dir "$tmp_vina_dir" \
                         --input-dir "$vina_in" 2>/dev/null || { rm -rf "$tmp_vina_dir"; continue; }
@@ -889,11 +885,11 @@ collect_control_results() {
 
                     local tmp_pbsa_dir
                     tmp_pbsa_dir=$(mktemp -d)
-                    bash "$SCRIPT_ROOT/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
+                    bash "$SCRIPT_ROOT/md_pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
 
                     # Map SMILES using controls.csv
                     if [ -f "$tmp_pbsa_dir/tmp.csv" ]; then
-                        python "$SCRIPT_ROOT/pbsa/mapping_smiles.py" \
+                        python "$SCRIPT_ROOT/md_pbsa/mapping_smiles.py" \
                             --collected "$tmp_pbsa_dir/tmp.csv" \
                             --smiles_csv "$CONTROLS_CSV" \
                             --outdir "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
@@ -989,7 +985,7 @@ Prerequisites:
     Run 'run_prefold_boltz2.sh' first
 
   - For AF3: Prefolded structures must exist at:
-    {task_root}/{target}/fine_screening/AF3/prefold/{target_lower}/{target_lower}_data.json
+    {task_root}/{target}/fine_screening/AF3/prefold/{target}/{target}_data.json
     Run 'prefold_af3' from Snakefile first
 
   - For MD+PBSA: DiffDock must complete first to generate SDF files

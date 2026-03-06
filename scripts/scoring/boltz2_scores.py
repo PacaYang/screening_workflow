@@ -47,42 +47,42 @@ def find_file(root_folder, pattern):
 
 def gen_scores_df(path):
     # loop over path
-    columns=['folder', 'chain_iptm', 'pair_pde', 'chain_ptm', 'iptm', 'ptm', 'ranking_score', 'iplddt', 'affinity', 'probability']
+    columns=['folder', 'SMILES', 'chain_iptm', 'pair_pde', 'chain_ptm', 'iptm', 'ptm', 'ranking_score', 'iplddt', 'affinity', 'probability']
+    rows = []
     for folder in tqdm(os.listdir(path)):
-        affinity_file = find_file(os.path.join(path, folder), 'affinity_*.json')
-        summary_file = find_file(os.path.join(path, folder), 'confidence*.json')
+        folder_path = os.path.join(path, folder)
+        if not os.path.isdir(folder_path):
+            continue
+
+        # Read SMILES from smiles.txt
+        smiles_file = os.path.join(folder_path, 'smiles.txt')
+        smiles = ""
+        if os.path.exists(smiles_file):
+            with open(smiles_file, 'r') as f:
+                smiles = f.read().strip()
+
+        affinity_file = find_file(folder_path, 'affinity_*.json')
+        summary_file = find_file(folder_path, 'confidence*.json')
+
         if affinity_file and summary_file:
             scores = read_summary_confidences(summary_file, affinity_file)
+            scores.insert(0, smiles)
             scores.insert(0, folder)
-            if 'df' not in locals():
-                df = pd.DataFrame(data=[scores], columns=columns)
-            else:
-                df = pd.concat([df, pd.DataFrame([scores], columns=df.columns)], ignore_index=True)
+            rows.append(scores)
         else:
             print(f"📁 Depth 1: {folder} is a file")
 
+    df = pd.DataFrame(data=rows, columns=columns)
     return df
 
-def map_smiles(df0, smiles_file, smiles_col):
-    '''
-    df0: the summary df without SMILES
-    smiles_file: the path to the SMILES file
-    '''
-    df0["index"] = df0['folder'].str.split('_').str[-1].astype(int)
-    smiles_df = pd.read_csv(smiles_file)[[smiles_col]]
-    df = pd.merge(df0, smiles_df, left_on='index', right_index=True, how='left')
-    return df
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Summarize the scores for Boltz prediction", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--boltz-results-folder", type=str, help="Path of the folder containing all the Boltz predicted results")
     parser.add_argument("--output-dir", type=str, help="Path to save the summary")
-    parser.add_argument("--smiles", type=str, help="Path to smiles file. Used to mapping the results")
-    parser.add_argument("--smiles-col", default="SMILES", type=str, help="Col name for the smiles")
 
     args = parser.parse_args()
 
-    df_0 = gen_scores_df(args.boltz_results_folder)
-    df = map_smiles(df_0, args.smiles, args.smiles_col)
+    df = gen_scores_df(args.boltz_results_folder)
     output_name = os.path.join(args.output_dir, "summary.csv")
     df.to_csv(output_name, index=False)

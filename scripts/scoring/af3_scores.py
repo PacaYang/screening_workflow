@@ -51,14 +51,19 @@ def gen_scores_df(path):
     # get target directory
     # loop over path
     columns=['SMILES', 'chain_iptm', 'chain_pair_iptm', 'chain_pair_pae_min', 'chain_ptm', 'iptm', 'ptm', 'ranking_score', 'plddt','folder']
+    rows = []
     for folder in tqdm(os.listdir(path)):
         first_level_path = os.path.join(path, folder)
         if os.path.isdir(first_level_path) and '_' not in folder and 'token' not in folder:  # Ensure it's a directory and skip any folder containing '_' in its name
-            # print(f"📁 Depth 1: {first_level_path}")
-            dataFile = os.path.join(first_level_path, folder + '_data.json')
-            with open(dataFile, "r") as file:
-                data = json.load(file)
-            smiles = data['sequences'][-1]['ligand']['smiles']
+            # Read SMILES from smiles.txt
+            smiles_file = os.path.join(first_level_path, 'smiles.txt')
+            if not os.path.exists(smiles_file):
+                print(f"Warning: No smiles.txt found in {first_level_path}, skipping")
+                continue
+
+            with open(smiles_file, 'r') as f:
+                smiles = f.read().strip()
+
             summaryFile = os.path.join(first_level_path, folder + '_summary_confidences.json')
             plddtFile = os.path.join(first_level_path, folder + '_confidences.json')
 
@@ -69,13 +74,11 @@ def gen_scores_df(path):
             scores = read_summary_confidences(summaryFile, plddtFile)
             scores.insert(0, smiles)
             scores.insert(9, folder)
-            if 'df' not in locals():
-                df = pd.DataFrame(data=[scores], columns=columns)
-            else:
-                df = pd.concat([df, pd.DataFrame([scores], columns=df.columns)], ignore_index=True)
+            rows.append(scores)
         else:
             print(f"📁 Depth 1: {first_level_path} is a file")
 
+    df = pd.DataFrame(data=rows, columns=columns)
     return df
 
 def analyze(input_folder, output_dir):
