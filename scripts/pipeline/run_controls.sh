@@ -885,11 +885,11 @@ collect_control_results() {
 
                     local tmp_pbsa_dir
                     tmp_pbsa_dir=$(mktemp -d)
-                    bash "$SCRIPT_ROOT/md_pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
+                    bash "$SCRIPT_ROOT/md_pbsa/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }
 
                     # Map SMILES using controls.csv
                     if [ -f "$tmp_pbsa_dir/tmp.csv" ]; then
-                        python "$SCRIPT_ROOT/md_pbsa/mapping_smiles.py" \
+                        python "$SCRIPT_ROOT/md_pbsa/pbsa/mapping_smiles.py" \
                             --collected "$tmp_pbsa_dir/tmp.csv" \
                             --smiles_csv "$CONTROLS_CSV" \
                             --outdir "$tmp_pbsa_dir" 2>/dev/null || { rm -rf "$tmp_pbsa_dir"; continue; }

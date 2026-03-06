@@ -491,9 +491,9 @@ stage_collect_results() {
                 local pbsa_dir="${base}/fine_screening/PBSA/PBSA/PBSA"
                 local pbsa_outdir="${base}/fine_screening/PBSA"
                 echo "  ${protein}/PBSA: extracting results"
-                bash "$SCRIPT_DIR/../md_pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$pbsa_outdir"
+                bash "$SCRIPT_DIR/../md_pbsa/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$pbsa_outdir"
                 echo "  ${protein}/PBSA: mapping SMILES"
-                python "$SCRIPT_DIR/../md_pbsa/mapping_smiles.py" \
+                python "$SCRIPT_DIR/../md_pbsa/pbsa/mapping_smiles.py" \
                     --collected "${pbsa_outdir}/tmp.csv" \
                     --smiles_csv "$selected" \
                     --outdir "$pbsa_outdir"
