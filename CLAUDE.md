@@ -1,12 +1,14 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This is the GCP branch of the repo, specifically used for GCP. 
+When change the codes, do not perform any git operations, eg, git add, git commit, git revert, git pull, etc.
 
 ## What This Repo Does
 
 Multi-stage computational drug screening pipeline. Screens compound libraries against protein targets using:
-1. Fast ML-based binding affinity models (initial screening)
-2. Structure prediction + docking + MD/PBSA (fine screening)
+1. Fast ML-based binding affinity models (initial screening: ColdDTA, HMSA, GraphDTA, DrugLAMP, ConPLex)
+2. Structure prediction + docking + MD/PBSA (fine screening: AF3, Boltz2, RoseTTAFold, Vina, DiffDock/PBSA)
 
 Runs on a GCP cluster with SLURM job scheduling.
 

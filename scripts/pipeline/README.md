@@ -7,6 +7,7 @@ This directory contains the modular implementation of the drug screening pipelin
 ```
 scripts/pipeline/
 ├── run_full_pipeline.sh          # Master controller (NEW)
+├── run_af3_first_pipeline.sh     # AF3-first controller (no initial screening)
 ├── run_full_pipeline.sh.backup   # Original monolithic script (backup)
 ├── lib/                          # Shared libraries
 │   ├── logger.sh                 # Logging functions
@@ -37,6 +38,11 @@ scripts/pipeline/
 ### Run full pipeline
 ```bash
 ./run_full_pipeline.sh --task-root /data/screen --proteins "JAK1JH1 EGFR" run
+```
+
+### Run AF3-first pipeline (no initial screening)
+```bash
+./run_af3_first_pipeline.sh --task-root /data/screen --proteins "JAK1JH1 EGFR" run
 ```
 
 ### Check status
