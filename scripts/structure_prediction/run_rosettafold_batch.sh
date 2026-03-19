@@ -69,6 +69,8 @@ submit_protein_ligand_batch() {
     local LOG_DIR="${LIGAND_DIR}/logs"
     local TOKEN_DIR="${OUTPUT_DIR}/token"
     local TOKEN_FILE="${TOKEN_DIR}/batch_${batch_id}.done"
+    local LEDGER_FILE="${OUTPUT_DIR}/job_results.tsv"
+    local LEDGER_HELPER="${SCRIPT_ROOT}/pipeline/lib/job_result_ledger.sh"
     local SELECTED_CSV="${TASK_ROOT}/${protein}/initial_screening/selected.csv"
     local FASTA_FILE="${FOLD_DIR}/input/${protein}.fasta"
     local PROTEIN_FOLD_OUTPUT="${FOLD_DIR}/output"
@@ -136,6 +138,8 @@ cd RFAA_ROOT_PLACEHOLDER
 # Process each compound in batch
 SUCCESS_COUNT=0
 FAIL_COUNT=0
+BATCH_TARGETS_FILE="${LOCAL_OUT}/batch_targets.txt"
+: > "$BATCH_TARGETS_FILE"
 
 for i in $(seq $START_IDX $((END_IDX - 1))); do
     echo "Processing compound index: $i"
@@ -183,6 +187,7 @@ PYEOF
 
     COMPOUND_ID=$(echo "$COMPOUND_DATA" | cut -d'|' -f1)
     SMILES=$(echo "$COMPOUND_DATA" | cut -d'|' -f2)
+    echo "compound_${COMPOUND_ID}" >> "$BATCH_TARGETS_FILE"
 
     echo "  Compound ID: $COMPOUND_ID"
     echo "  SMILES: $SMILES"
@@ -293,6 +298,25 @@ with open('$output_dir/smiles.txt', 'w') as f:
     echo "Results copied to OUTPUT_DIR_PLACEHOLDER/"
 fi
 
+# Validate copied outputs and append batch result to job ledger
+EXPECTED_COUNT=$(sort -u "$BATCH_TARGETS_FILE" | sed '/^$/d' | wc -l)
+COMPLETED_COUNT=0
+while IFS= read -r target_compound; do
+    [ -z "$target_compound" ] && continue
+    if compgen -G "OUTPUT_DIR_PLACEHOLDER/${target_compound}/*_aux.pt" > /dev/null; then
+        COMPLETED_COUNT=$((COMPLETED_COUNT + 1))
+    fi
+done < <(sort -u "$BATCH_TARGETS_FILE")
+
+JOB_STATUS="failed"
+if [ "$EXPECTED_COUNT" -gt 0 ] && [ "$COMPLETED_COUNT" -eq "$EXPECTED_COUNT" ]; then
+    JOB_STATUS="success"
+fi
+
+source "LEDGER_HELPER_PLACEHOLDER"
+append_job_result "LEDGER_FILE_PLACEHOLDER" "${SLURM_JOB_ID:-unknown}" "PROTEIN_PLACEHOLDER" "batch_BATCH_ID_PLACEHOLDER" "$JOB_STATUS" "$COMPLETED_COUNT" "$EXPECTED_COUNT"
+echo "Batch ledger status: ${JOB_STATUS} (${COMPLETED_COUNT}/${EXPECTED_COUNT})"
+
 # Create completion token
 touch TOKEN_FILE_PLACEHOLDER
 
@@ -318,6 +342,8 @@ EOFSCRIPT
     sed -i "s|FASTA_FILE_PLACEHOLDER|${FASTA_FILE}|g" "$JOB_SCRIPT"
     sed -i "s|OUTPUT_DIR_PLACEHOLDER|${OUTPUT_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|TOKEN_FILE_PLACEHOLDER|${TOKEN_FILE}|g" "$JOB_SCRIPT"
+    sed -i "s|LEDGER_FILE_PLACEHOLDER|${LEDGER_FILE}|g" "$JOB_SCRIPT"
+    sed -i "s|LEDGER_HELPER_PLACEHOLDER|${LEDGER_HELPER}|g" "$JOB_SCRIPT"
     sed -i "s|PROTEIN_FOLD_OUTPUT_PLACEHOLDER|${PROTEIN_FOLD_OUTPUT}|g" "$JOB_SCRIPT"
     sed -i "s|DB_UR30_PLACEHOLDER|${ROSETTA_DB_UR30}|g" "$JOB_SCRIPT"
     sed -i "s|DB_BFD_PLACEHOLDER|${ROSETTA_DB_BFD}|g" "$JOB_SCRIPT"
@@ -390,7 +416,9 @@ for PROTEIN in $PROTEINS; do
 
     RFAA_DIR="${TASK_ROOT}/${PROTEIN}/fine_screening/RoseTTAFold"
     mkdir -p "${RFAA_DIR}/protein_ligand"
+    mkdir -p "${RFAA_DIR}/protein_ligand/output"
     > "${RFAA_DIR}/protein_ligand/job_ids.txt"
+    > "${RFAA_DIR}/protein_ligand/output/job_results.tsv"
 
     SUBMITTED=0
     for batch_id in $(seq 0 $((N_BATCHES - 1))); do

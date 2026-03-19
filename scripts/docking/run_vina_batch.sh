@@ -265,6 +265,7 @@ submit_vina_job() {
     local INPUT_CSV="${FINE_DIR}/Vina/input/${part}.csv"
     local OUTPUT_DIR="${FINE_DIR}/Vina/output/${part}"
     local TOKEN_FILE="${FINE_DIR}/Vina/output/${part}.done"
+    local LEDGER_FILE="${FINE_DIR}/Vina/output/job_results.tsv"
 
     # Check if input CSV exists
     if [ ! -f "$INPUT_CSV" ]; then
@@ -311,22 +312,35 @@ echo "Prepared receptor directory: ${receptor_dir}"
 # Activate conda environment
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate vina_test
+source "${SCRIPT_ROOT}/pipeline/lib/job_result_ledger.sh"
 
 # Create output directory
 mkdir -p "${OUTPUT_DIR}"
 
 # Run Vina docking
 echo "Starting Vina docking..."
+VINA_EXIT_CODE=0
 python "${VINA_EXE}" \\
     --smiles "${INPUT_CSV}" \\
     --boxes '${boxes_json}' \\
     --output "${OUTPUT_DIR}" \\
     --prepared-receptor-dir "${receptor_dir}" \\
     --smiles-col "ligand_description" \\
-    --skip-docked
+    --skip-docked || VINA_EXIT_CODE=\$?
 
-# Check if docking completed successfully
-if [ \$? -eq 0 ]; then
+# Validate outputs and append part result to job ledger
+EXPECTED_COUNT=\$(python3 -c "import csv; import sys; f='${INPUT_CSV}'; rows=max(sum(1 for _ in open(f, 'r', encoding='utf-8'))-1,0); print(rows)")
+COMPLETED_COUNT=\$(find "${OUTPUT_DIR}" -type f -name "docking_affinities.txt" 2>/dev/null | wc -l)
+
+JOB_STATUS="failed"
+if [ "\$VINA_EXIT_CODE" -eq 0 ] && [ "\$EXPECTED_COUNT" -gt 0 ] && [ "\$COMPLETED_COUNT" -ge "\$EXPECTED_COUNT" ]; then
+    JOB_STATUS="success"
+fi
+
+append_job_result "${LEDGER_FILE}" "\${SLURM_JOB_ID:-unknown}" "${protein}" "${part}" "\$JOB_STATUS" "\$COMPLETED_COUNT" "\$EXPECTED_COUNT"
+echo "Part ledger status: \${JOB_STATUS} (\${COMPLETED_COUNT}/\${EXPECTED_COUNT})"
+
+if [ "\$JOB_STATUS" = "success" ]; then
     echo "Vina docking completed successfully"
     touch "${TOKEN_FILE}"
 else
@@ -400,6 +414,7 @@ for PROTEIN in $PROTEINS; do
     mkdir -p "$OUTPUT_DIR"
     > "${OUTPUT_DIR}/job_ids.txt"
     > "${OUTPUT_DIR}/receptor_job_ids.txt"
+    > "${OUTPUT_DIR}/job_results.tsv"
 
     if ! submit_receptor_prep_job "$PROTEIN" "$BOXES_JSON"; then
         log_error "Skipping ${PROTEIN}: receptor prep submission failed"

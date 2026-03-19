@@ -63,6 +63,7 @@ submit_boltz2_batch() {
     local OUTPUT_DIR="${FINE_DIR}/Boltz2/output"
     local TOKEN_DIR="${OUTPUT_DIR}/token"
     local SELECTED_CSV="${TASK_ROOT}/${protein}/initial_screening/selected.csv"
+    local LEDGER_FILE="${OUTPUT_DIR}/job_results.tsv"
 
     # Check if input directory exists
     if [ ! -d "$INPUT_DIR" ]; then
@@ -106,6 +107,7 @@ echo "Processing batch ${batch_id} for protein ${protein}"
 # Activate conda environment
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate boltz_test
+source "${SCRIPT_ROOT}/pipeline/lib/job_result_ledger.sh"
 
 # Calculate job range for this batch
 SMILES_FILE="${SELECTED_CSV}"
@@ -242,6 +244,23 @@ done
 # Create completion token
 touch "${TOKEN_DIR}/batch_${batch_id}.done"
 
+# Validate copied outputs and append batch result to job ledger
+EXPECTED_COUNT=\$((END_IDX - START_IDX))
+COMPLETED_COUNT=0
+for i in \$(seq \$START_IDX \$((\$END_IDX - 1))); do
+    if compgen -G "${OUTPUT_DIR}/job_\${i}/affinity_*.json" > /dev/null; then
+        COMPLETED_COUNT=\$((COMPLETED_COUNT + 1))
+    fi
+done
+
+JOB_STATUS="failed"
+if [ "\$EXPECTED_COUNT" -gt 0 ] && [ "\$COMPLETED_COUNT" -eq "\$EXPECTED_COUNT" ]; then
+    JOB_STATUS="success"
+fi
+
+append_job_result "${LEDGER_FILE}" "\${SLURM_JOB_ID:-unknown}" "${protein}" "batch_${batch_id}" "\$JOB_STATUS" "\$COMPLETED_COUNT" "\$EXPECTED_COUNT"
+echo "Batch ledger status: \${JOB_STATUS} (\${COMPLETED_COUNT}/\${EXPECTED_COUNT})"
+
 # Clean up local temporary directory
 rm -rf \$BATCH_LOCAL_OUT
 
@@ -300,6 +319,7 @@ for PROTEIN in $PROTEINS; do
     OUTPUT_DIR="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/output"
     mkdir -p "$OUTPUT_DIR"
     > "${OUTPUT_DIR}/job_ids.txt"
+    > "${OUTPUT_DIR}/job_results.tsv"
 
     # Submit jobs for each batch
     SUBMITTED=0

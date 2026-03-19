@@ -13,6 +13,7 @@ source "${SCRIPT_DIR}/lib/pipeline_utils.sh"
 source "${SCRIPT_DIR}/lib/state_manager.sh"
 source "${SCRIPT_DIR}/lib/job_monitor.sh"
 source "${SCRIPT_DIR}/lib/config_loader.sh"
+source "${SCRIPT_DIR}/lib/progress_monitor.sh"
 
 # ============================================================================
 # Configuration Defaults
@@ -67,6 +68,7 @@ cleanup() {
         mark_pipeline_complete "interrupted"
         log_info "Pipeline state saved. Resume with: --resume-id ${PIPELINE_ID}"
     fi
+    stop_progress_monitor
     exit 130
 }
 trap cleanup SIGINT SIGTERM
@@ -284,21 +286,30 @@ run_pipeline() {
     export MASTER_AF3_WEIGHT_DIR="${MODEL_WEIGHTS_DIR}/AF3"
     export MASTER_AF3_DB_DIR="${MODEL_WEIGHTS_DIR}/af3_db"
 
+    start_progress_monitor "$TASK_ROOT" "$PROTEINS" "full" "$POLL_INTERVAL"
+    refresh_progress_monitor
+
     # Execute stages
     for stage in $(seq $START_FROM $STOP_AFTER); do
         log_info "========== Stage ${stage} =========="
+        refresh_progress_monitor
 
         if execute_stage "$stage"; then
             log_info "Stage ${stage} completed successfully"
+            refresh_progress_monitor
         else
             log_error "Stage ${stage} failed"
             mark_pipeline_complete "failed"
+            refresh_progress_monitor
+            stop_progress_monitor
             exit 1
         fi
     done
 
     # Mark pipeline as complete
     mark_pipeline_complete "completed"
+    refresh_progress_monitor
+    stop_progress_monitor
     log_info "Pipeline completed successfully!"
     log_info "Pipeline ID: ${PIPELINE_ID}"
 }

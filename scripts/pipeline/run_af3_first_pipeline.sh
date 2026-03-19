@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/logger.sh"
 source "${SCRIPT_DIR}/lib/pipeline_utils.sh"
 source "${SCRIPT_DIR}/lib/job_monitor.sh"
+source "${SCRIPT_DIR}/lib/progress_monitor.sh"
 
 # ============================================================================
 # Defaults
@@ -76,6 +77,7 @@ HELPEOF
 cleanup() {
     echo ""
     log_error "AF3-first pipeline interrupted"
+    stop_progress_monitor
     exit 130
 }
 trap cleanup SIGINT SIGTERM
@@ -365,18 +367,28 @@ execute_step() {
 
     if [ "$step" -lt "$START_FROM" ] || [ "$step" -gt "$STOP_AFTER" ]; then
         log_info "Skipping step ${step} (${step_label}) due to range filter"
+        refresh_progress_monitor
         return 0
     fi
 
     if is_step_done "$step"; then
         log_info "Skipping step ${step} (${step_label}) - checkpoint exists"
+        refresh_progress_monitor
         return 0
     fi
 
     log_stage_start "Step ${step}: ${step_label}"
-    "run_step_${step}"
-    mark_step_done "$step"
-    log_stage_complete "Step ${step}: ${step_label}"
+    refresh_progress_monitor
+
+    if "run_step_${step}"; then
+        mark_step_done "$step"
+        log_stage_complete "Step ${step}: ${step_label}"
+        refresh_progress_monitor
+        return 0
+    fi
+
+    refresh_progress_monitor
+    return 1
 }
 
 run_pipeline() {
@@ -390,11 +402,20 @@ run_pipeline() {
     log_info "AF3 selection: pLDDT >= ${AF3_PLDDT_THRESHOLD}, PAE != -1, top fraction ${TOP_FRACTION}"
     log_info "DiffDock/MD-PBSA: excluded in this flow"
 
+    start_progress_monitor "$TASK_ROOT" "$PROTEINS" "af3-first" "$POLL_INTERVAL"
+    refresh_progress_monitor
+
     local step
     for step in 1 2 3 4 5 6; do
-        execute_step "$step"
+        if ! execute_step "$step"; then
+            refresh_progress_monitor
+            stop_progress_monitor
+            return 1
+        fi
     done
 
+    refresh_progress_monitor
+    stop_progress_monitor
     log_info "AF3-first pipeline completed"
 }
 
