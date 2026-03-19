@@ -14,7 +14,7 @@ source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/gen_boltz_yaml.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/gen_boltz_yaml.py"
 
 # ============================================================================
 # Functions
@@ -63,6 +63,11 @@ for PROTEIN in $PROTEINS; do
         continue
     fi
 
+    if [ ! -f "$MSA" ]; then
+        log_error "Boltz2 prefold MSA not found for ${PROTEIN}: $MSA"
+        continue
+    fi
+
     if [ ! -f "$SELECTED" ]; then
         log_error "selected.csv not found for ${PROTEIN}: $SELECTED"
         continue
@@ -76,7 +81,8 @@ for PROTEIN in $PROTEINS; do
         --msa "$MSA" \
         --smiles-path "$SELECTED" \
         --protein-name "$PROTEIN" \
-        --protein-file "$SEQS_CSV"
+        --protein-file "$SEQS_CSV" \
+        --name-col protein_name
     touch "$TOKEN"
 
     log_info "Completed write_boltz2_input for ${PROTEIN}"

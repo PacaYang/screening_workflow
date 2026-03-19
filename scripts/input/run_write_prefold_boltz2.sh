@@ -14,7 +14,7 @@ source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/gen_boltz_yaml.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/gen_boltz_yaml.py"
 
 # ============================================================================
 # Functions
@@ -62,6 +62,7 @@ for PROTEIN in $PROTEINS; do
         --output "$OUTDIR" \
         --protein-name "$PROTEIN" \
         --protein-file "$SEQS_CSV" \
+        --name-col protein_name \
         --protein-only
 
     log_info "Completed write_prefold_boltz2 for ${PROTEIN}"

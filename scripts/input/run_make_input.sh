@@ -15,7 +15,7 @@ source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
 SMILES_CSV="${TASK_ROOT}/Input/compounds_smiles.csv"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/make_input_csv.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/make_input_csv.py"
 
 # ============================================================================
 # Functions
@@ -73,6 +73,8 @@ for PROTEIN in $PROTEINS; do
         --sequences "$SEQS_CSV" \
         --smiles "$SMILES_CSV" \
         --protein "$PROTEIN" \
+        --smi-col "canonical_smiles" \
+        --name-col "protein_name" \
         --outdir "$OUTDIR"
     touch "$TOKEN"
 

@@ -223,7 +223,8 @@ protein_inputs:
 
 sm_inputs:
   B:
-    input: "${SMILES}"
+    input: |-
+      ${SMILES}
     input_type: "smiles"
 EOF
 
@@ -247,15 +248,15 @@ echo "  Failed: ${FAIL_COUNT}"
 if [ $SUCCESS_COUNT -gt 0 ]; then
     echo "Copying results..."
 
-    for compound_dir in $LOCAL_OUT/compound_*/PROTEIN_PLACEHOLDER_ligand_compound_*; do
+    for compound_dir in "$LOCAL_OUT"/compound_*; do
         if [ ! -d "$compound_dir" ]; then
             continue
         fi
 
-        # Extract compound ID from directory name
-        compound_id=$(echo "$compound_dir" | grep -oP 'compound_\K\d+' | head -1)
-        if [ -z "$compound_id" ]; then
-            echo "Warning: Could not extract compound ID from $compound_dir"
+        compound_name=$(basename "$compound_dir")
+        compound_id="${compound_name#compound_}"
+        if [ "$compound_name" = "$compound_id" ] || [ -z "$compound_id" ]; then
+            echo "Warning: Unexpected compound directory name: $compound_dir"
             continue
         fi
 
@@ -263,7 +264,7 @@ if [ $SUCCESS_COUNT -gt 0 ]; then
         mkdir -p "$output_dir"
 
         # Extract and save SMILES from config file (but don't copy the config)
-        config_file="$LOCAL_OUT/config_compound_${compound_id}.yaml"
+        config_file="$LOCAL_OUT/config_${compound_name}.yaml"
         if [ -f "$config_file" ]; then
             python3 -c "
 import yaml
@@ -276,14 +277,14 @@ with open('$output_dir/smiles.txt', 'w') as f:
         fi
 
         # Copy aux.pt file (contains scores: mean_plddt, mean_pae, pae_prot, pae_inter)
-        aux_file=$(find "$compound_dir" -name "*_aux.pt" | head -1)
+        aux_file=$(find "$compound_dir" -maxdepth 1 -name "*_aux.pt" | head -1)
         if [ -f "$aux_file" ]; then
             cp "$aux_file" "$output_dir/"
             echo "  Copied aux.pt for compound $compound_id"
         fi
 
         # Copy best PDB structure (typically only one main model)
-        pdb_file=$(find "$compound_dir" -name "*.pdb" | head -1)
+        pdb_file=$(find "$compound_dir" -maxdepth 1 -name "*.pdb" | head -1)
         if [ -f "$pdb_file" ]; then
             cp "$pdb_file" "$output_dir/structure.pdb"
         fi
@@ -326,7 +327,7 @@ EOFSCRIPT
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted protein-ligand batch ${batch_id} for ${protein} (Job ID: ${JOB_ID})"
-        echo "$JOB_ID" >> "${RFAA_DIR}/submitted_jobs.txt"
+        echo "$JOB_ID" >> "${RFAA_DIR}/protein_ligand/job_ids.txt"
         return 0
     else
         log_error "Failed to submit protein-ligand batch ${batch_id} for ${protein}"
@@ -388,7 +389,8 @@ for PROTEIN in $PROTEINS; do
     log_info "Batch size: ${BATCH_SIZE} compounds per batch"
 
     RFAA_DIR="${TASK_ROOT}/${PROTEIN}/fine_screening/RoseTTAFold"
-    > "${RFAA_DIR}/submitted_jobs.txt"
+    mkdir -p "${RFAA_DIR}/protein_ligand"
+    > "${RFAA_DIR}/protein_ligand/job_ids.txt"
 
     SUBMITTED=0
     for batch_id in $(seq 0 $((N_BATCHES - 1))); do

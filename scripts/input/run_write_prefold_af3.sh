@@ -12,7 +12,7 @@ set -e
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/gen_af3_json_protein.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/gen_af3_json_protein.py"
 
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate HMSA_test
@@ -60,7 +60,8 @@ for PROTEIN in $PROTEINS; do
     python "$EXE" \
         --output-dir "$OUTDIR" \
         --protein-name "$PROTEIN" \
-        --input-csv "$SEQS_CSV"
+        --input-csv "$SEQS_CSV" \
+        --name-col "protein_name"
 
     log_info "Completed write_prefold_af3 for ${PROTEIN}"
 done

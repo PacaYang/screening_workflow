@@ -155,7 +155,7 @@ EOF
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted part ${part} for protein ${protein} (Job ID: ${JOB_ID})"
-        echo "$JOB_ID" >> "${OUTPUT_DIR}/submitted_jobs.txt"
+        echo "$JOB_ID" >> "${OUTPUT_DIR}/job_ids.txt"
         return 0
     else
         log_error "Failed to submit part ${part} for protein ${protein}"
@@ -197,7 +197,7 @@ for PROTEIN in $PROTEINS; do
     # Clear previous job list
     OUTPUT_DIR="${TASK_ROOT}/${PROTEIN}/fine_screening/PBSA/DiffDock/output"
     mkdir -p "$OUTPUT_DIR"
-    > "${OUTPUT_DIR}/submitted_jobs.txt"
+    > "${OUTPUT_DIR}/job_ids.txt"
 
     # Submit jobs for each part
     SUBMITTED=0

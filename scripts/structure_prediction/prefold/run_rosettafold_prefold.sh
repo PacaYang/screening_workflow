@@ -29,8 +29,9 @@ RFAA_CONDA_ENV="${MASTER_RFAA_CONDA_ENV:-RFAA}"
 PROTEIN_TIME_LIMIT="${PROTEIN_TIME_LIMIT:-48:00:00}"
 PROTEIN_MEMORY="${PROTEIN_MEMORY:-15G}"
 PROTEIN_CPUS=${PROTEIN_CPUS:-2}
+PROTEIN_EXCLUSIVE="${PROTEIN_EXCLUSIVE:-1}"
 PROTEIN_GPU_REQUEST="${PROTEIN_GPU_REQUEST:---gres=gpu:1}"
-PROTEIN_PARTITION="${PROTEIN_PARTITION:-g24}"
+PROTEIN_PARTITION="${PROTEIN_PARTITION:-g212}"
 
 # ============================================================================
 # Functions
@@ -69,7 +70,7 @@ try:
     df = pd.read_csv("${SEQS_CSV}")
 
     # Find the protein row
-    protein_row = df[df['name'] == "${protein}"]
+    protein_row = df[df['protein_name'] == "${protein}"]
 
     if protein_row.empty:
         print("ERROR: Protein ${protein} not found in sequences.csv", file=sys.stderr)
@@ -173,6 +174,7 @@ submit_protein_fold_job() {
 #SBATCH --mem=MEMORY_PLACEHOLDER
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=CPUS_PLACEHOLDER
+#SBATCH EXCLUSIVE_PLACEHOLDER
 #SBATCH --partition=PARTITION_PLACEHOLDER
 #SBATCH --output=LOG_DIR_PLACEHOLDER/slurm_protein_%j.out
 #SBATCH --error=LOG_DIR_PLACEHOLDER/slurm_protein_%j.err
@@ -210,6 +212,12 @@ EOFSCRIPT
     sed -i "s|MEMORY_PLACEHOLDER|${PROTEIN_MEMORY}|g" "$JOB_SCRIPT"
     sed -i "s|CPUS_PLACEHOLDER|${PROTEIN_CPUS}|g" "$JOB_SCRIPT"
     sed -i "s|GPU_REQUEST_PLACEHOLDER|${PROTEIN_GPU_REQUEST}|g" "$JOB_SCRIPT"
+    # Set --exclusive if explicitly requested, otherwise remove the placeholder line
+    if [ "${PROTEIN_EXCLUSIVE}" = "1" ]; then
+        sed -i "s|#SBATCH EXCLUSIVE_PLACEHOLDER|#SBATCH --exclusive|g" "$JOB_SCRIPT"
+    else
+        sed -i "/#SBATCH EXCLUSIVE_PLACEHOLDER/d" "$JOB_SCRIPT"
+    fi
     sed -i "s|LOG_DIR_PLACEHOLDER|${LOG_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|RFAA_CONDA_ENV_PLACEHOLDER|${RFAA_CONDA_ENV}|g" "$JOB_SCRIPT"
     sed -i "s|RFAA_ROOT_PLACEHOLDER|${RFAA_ROOT}|g" "$JOB_SCRIPT"
@@ -224,7 +232,7 @@ EOFSCRIPT
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted protein folding job for ${protein} (Job ID: ${JOB_ID})"
-        echo "$JOB_ID" >> "${RFAA_DIR}/submitted_jobs.txt"
+        echo "$JOB_ID" >> "${RFAA_DIR}/job_ids.txt"
         return 0
     else
         log_error "Failed to submit protein folding job for ${protein}"

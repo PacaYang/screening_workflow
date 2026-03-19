@@ -53,9 +53,14 @@ def collect_results(path):
         affinity_lst.append(affinity)
 
     tmp_df = pd.DataFrame(data={'folder':folder_lst, 'idx':idx_lst, 'box':box_lst, 'affinity':affinity_lst})
+    if tmp_df.empty:
+        return pd.DataFrame(columns=['folder', 'idx', 'box', 'affinity'])
     return tmp_df
 
 def process_results(scores_df, input_folder):
+    if scores_df.empty:
+        return pd.DataFrame(columns=['folder', 'idx', 'box', 'affinity', 'SMILES'])
+
     df_dicts = {}
 
     smilesfile_list = glob.glob(f"{input_folder}/input_part_*.csv")
@@ -67,7 +72,7 @@ def process_results(scores_df, input_folder):
         all_csvs = sorted(glob.glob(f"{input_folder}/*.csv"))
         for i, csv_path in enumerate(all_csvs):
             df_dicts[str(i)] = pd.read_csv(csv_path)
-    
+
     def find_SMILES(row):
         try:
             smiles = df_dicts[str(row['folder'])].iloc[int(row['idx'])]['ligand_description']
@@ -88,4 +93,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     tmp_df = collect_results(args.vina_results_folder)
     df = process_results(tmp_df, args.input_dir)
-    df.to_csv(os.path.join(args.output_dir, 'results.csv'))
+    os.makedirs(args.output_dir, exist_ok=True)
+    df.to_csv(os.path.join(args.output_dir, 'results.csv'), index=False)

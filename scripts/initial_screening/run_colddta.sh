@@ -13,7 +13,7 @@ set -e
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/ColdDTA_predict.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/initial_screening/ColdDTA_predict.py"
 CHECKPOINT="${MASTER_COLDDTA_CHECKPOINT:-/home/yangl_pacagen_com/Applications/model_weights/ColdDTA/epoch1297test_loss0.1798.pt}"
 CONDA_ENV="cold_test"
 
@@ -99,7 +99,7 @@ EOF
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted input_${idx} for ${protein} (Job ID: ${JOB_ID})"
-        echo "$JOB_ID" >> "${OUTPUT_DIR}/submitted_jobs.txt"
+        echo "$JOB_ID" >> "${OUTPUT_DIR}/job_ids.txt"
         return 0
     else
         log_error "Failed to submit input_${idx} for ${protein}"
@@ -136,7 +136,7 @@ for PROTEIN in $PROTEINS; do
 
     OUTPUT_DIR="${TASK_ROOT}/${PROTEIN}/initial_screening/ColdDTA"
     mkdir -p "$OUTPUT_DIR"
-    > "${OUTPUT_DIR}/submitted_jobs.txt"
+    > "${OUTPUT_DIR}/job_ids.txt"
 
     SUBMITTED=0
     for INPUT_FILE in $INPUT_FILES; do

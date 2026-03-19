@@ -48,6 +48,9 @@ RUN_DIFFDOCK=1
 RUN_MD_PBSA=1
 COLLECT_ONLY=0
 
+# Track one receptor prep job per target for Vina controls
+declare -A VINA_RECEPTOR_PREP_JOBS
+
 # Polling interval for SLURM job monitoring (seconds)
 POLL_INTERVAL=300
 
@@ -169,34 +172,150 @@ setup_control_dirs() {
     echo "$target_dir"
 }
 
+is_control_receptor_cache_ready() {
+    local receptor_dir=$1
+    local boxes_json=$2
+
+    python3 - "$receptor_dir" "$boxes_json" <<'PY'
+import json
+import os
+import sys
+
+receptor_dir = sys.argv[1]
+boxes_json = sys.argv[2]
+manifest_path = os.path.join(receptor_dir, "receptor_manifest.json")
+
+if not os.path.exists(manifest_path):
+    sys.exit(1)
+
+def normalize_boxes(values):
+    if values and not isinstance(values[0], (list, tuple)):
+        values = [values]
+    return [[float(x) for x in row] for row in values]
+
+def close_boxes(a, b, tol=1e-3):
+    if len(a) != len(b):
+        return False
+    for row_a, row_b in zip(a, b):
+        if len(row_a) != len(row_b):
+            return False
+        for x, y in zip(row_a, row_b):
+            if abs(float(x) - float(y)) > tol:
+                return False
+    return True
+
+try:
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+    manifest_boxes = normalize_boxes(manifest["boxes_input"])
+    requested_boxes = normalize_boxes(json.loads(boxes_json))
+    if not close_boxes(manifest_boxes, requested_boxes):
+        sys.exit(1)
+
+    receptor_entries = manifest["receptor_pdbqts"]
+    if isinstance(receptor_entries, dict):
+        receptor_entries = [receptor_entries[k] for k in sorted(receptor_entries, key=lambda x: int(x))]
+
+    if len(receptor_entries) != len(manifest_boxes):
+        sys.exit(1)
+
+    for entry in receptor_entries:
+        receptor_path = entry
+        if not os.path.isabs(receptor_path):
+            receptor_path = os.path.join(receptor_dir, receptor_path)
+        if not os.path.exists(receptor_path) or os.path.getsize(receptor_path) == 0:
+            sys.exit(1)
+except Exception:
+    sys.exit(1)
+
+sys.exit(0)
+PY
+}
+
+submit_vina_receptor_prep() {
+    local target=$1
+    local boxes_json=$2
+
+    local RECEPTOR_DIR="${CONTROLS_OUTPUT_DIR}/${target}/receptor"
+    local PDB_FILE="${TASK_ROOT}/Input/protein_file/${target}/${target}.pdb"
+    local JOB_SCRIPT="${RECEPTOR_DIR}/slurm_receptor_prep.sh"
+
+    if [ ! -f "$PDB_FILE" ]; then
+        log_error "PDB file not found for receptor prep: $PDB_FILE"
+        return 1
+    fi
+
+    mkdir -p "$RECEPTOR_DIR"
+
+    if is_control_receptor_cache_ready "$RECEPTOR_DIR" "$boxes_json"; then
+        log_info "Reusing prepared receptor cache for control target ${target}"
+        VINA_RECEPTOR_PREP_JOBS["$target"]=""
+        return 0
+    fi
+
+    cat > "$JOB_SCRIPT" <<EOF
+#!/bin/bash
+#SBATCH --job-name=vina_ctrl_prep_${target}
+#SBATCH --time=${VINA_TIME_LIMIT}
+#SBATCH --mem=${VINA_MEMORY}
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=${VINA_CPUS}
+#SBATCH --partition=${PARTITION}
+#SBATCH --output=${RECEPTOR_DIR}/slurm_receptor_prep_%j.out
+#SBATCH --error=${RECEPTOR_DIR}/slurm_receptor_prep_%j.err
+
+set -e
+
+echo "Control receptor prep started at: \$(date)"
+echo "Running on host: \$(hostname)"
+echo "Job ID: \$SLURM_JOB_ID"
+echo "Target: ${target}"
+echo "Docking boxes: ${boxes_json}"
+
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate vina_test
+
+python "${VINA_EXE}" \\
+    --pdb "${PDB_FILE}" \\
+    --boxes '${boxes_json}' \\
+    --output "${RECEPTOR_DIR}" \\
+    --prepare-receptor-only
+
+echo "Control receptor prep completed at: \$(date)"
+EOF
+
+    local job_id
+    job_id=$(sbatch --parsable "$JOB_SCRIPT")
+
+    if [ -n "$job_id" ]; then
+        VINA_RECEPTOR_PREP_JOBS["$target"]="$job_id"
+        echo "$job_id" >> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina_receptor.txt"
+        log_info "Submitted receptor prep for control target ${target} (Job ID: ${job_id})"
+        return 0
+    fi
+
+    log_error "Failed to submit receptor prep for control target ${target}"
+    return 1
+}
+
 # Function to submit Vina job for a single control
 submit_vina_control() {
     local target=$1
     local control_id=$2
     local smiles=$3
     local target_dir=$4
+    local boxes_json=$5
+    local receptor_dir=$6
+    local prep_job_id=$7
 
     local INPUT_CSV="${target_dir}/input/control.csv"
     local OUTPUT_DIR="${target_dir}/Vina/output"
     local TOKEN_FILE="${OUTPUT_DIR}/vina.done"
-    local PDB_FILE="${TASK_ROOT}/Input/protein_file/${target}/${target}.pdb"
 
     # Create input CSV with single SMILES
     echo "ligand_description" > "$INPUT_CSV"
     echo "$smiles" >> "$INPUT_CSV"
-
-    # Check if PDB file exists
-    if [ ! -f "$PDB_FILE" ]; then
-        log_error "PDB file not found: $PDB_FILE"
-        return 1
-    fi
-
-    # Get docking box parameters as JSON
-    BOXES_JSON=$(get_box_params "$target")
-    if [ $? -ne 0 ] || [ -z "$BOXES_JSON" ]; then
-        log_error "Failed to get box parameters for ${target}"
-        return 1
-    fi
 
     # Create SLURM job script
     local JOB_SCRIPT="${OUTPUT_DIR}/slurm_vina.sh"
@@ -218,7 +337,8 @@ echo "Job started at: \$(date)"
 echo "Running on host: \$(hostname)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Control: ${target} control_${control_id}"
-echo "Docking boxes: ${BOXES_JSON}"
+echo "Docking boxes: ${boxes_json}"
+echo "Prepared receptor directory: ${receptor_dir}"
 
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate vina_test
@@ -227,9 +347,9 @@ mkdir -p "${OUTPUT_DIR}"
 
 python "${VINA_EXE}" \\
     --smiles "${INPUT_CSV}" \\
-    --pdb "${PDB_FILE}" \\
-    --boxes '${BOXES_JSON}' \\
+    --boxes '${boxes_json}' \\
     --output "${OUTPUT_DIR}" \\
+    --prepared-receptor-dir "${receptor_dir}" \\
     --smiles-col "ligand_description"
 
 if [ \$? -eq 0 ]; then
@@ -243,8 +363,14 @@ fi
 echo "Job completed at: \$(date)"
 EOF
 
+    local sbatch_cmd=(sbatch --parsable)
+    if [ -n "$prep_job_id" ]; then
+        sbatch_cmd+=(--dependency="afterok:${prep_job_id}")
+    fi
+
     # Submit the job
-    JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
+    local JOB_ID
+    JOB_ID=$("${sbatch_cmd[@]}" "$JOB_SCRIPT")
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted Vina for ${target} control_${control_id} (Job ID: ${JOB_ID})"
@@ -1132,6 +1258,7 @@ else
 
     # Clear previous job lists
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt"
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina_receptor.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
@@ -1154,7 +1281,21 @@ else
 
         # Submit workflows
         if [ $RUN_VINA -eq 1 ]; then
-            submit_vina_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
+            BOXES_JSON=$(get_box_params "$target")
+            if [ $? -ne 0 ] || [ -z "$BOXES_JSON" ]; then
+                log_error "Failed to get box parameters for ${target}; skipping Vina for this control"
+            else
+                if [ -z "${VINA_RECEPTOR_PREP_JOBS[$target]+x}" ]; then
+                    submit_vina_receptor_prep "$target" "$BOXES_JSON" || \
+                        log_error "Failed receptor prep submission for ${target}; skipping Vina for this control"
+                fi
+
+                if [ -n "${VINA_RECEPTOR_PREP_JOBS[$target]+x}" ]; then
+                    PREP_JOB_ID="${VINA_RECEPTOR_PREP_JOBS[$target]}"
+                    RECEPTOR_DIR="${CONTROLS_OUTPUT_DIR}/${target}/receptor"
+                    submit_vina_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" "$BOXES_JSON" "$RECEPTOR_DIR" "$PREP_JOB_ID" || true
+                fi
+            fi
         fi
 
         if [ $RUN_BOLTZ2 -eq 1 ]; then
@@ -1183,6 +1324,7 @@ else
     echo ""
     echo "Job IDs saved to:"
     echo "  Vina:     ${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt"
+    echo "  Vina prep:${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina_receptor.txt"
     echo "  Boltz2:   ${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
     echo "  AF3:      ${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
     echo "  DiffDock: ${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"

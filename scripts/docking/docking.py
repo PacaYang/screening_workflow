@@ -9,6 +9,7 @@ import rdkit
 from vina import Vina
 import subprocess
 import os
+import shutil
 import pandas as pd
 import argparse
 from pdbfixer import PDBFixer
@@ -97,6 +98,21 @@ def locate_file(from_path = None, query_path = None, query_name = "query file"):
     print(return_which)
 
     return possible_path[0]
+
+def locate_obabel(exe_path):
+    candidate = Path(exe_path) / "obabel"
+    if candidate.exists():
+        print(f"using obabel at:\n{candidate}\n")
+        return str(candidate)
+
+    which_path = shutil.which("obabel")
+    if which_path:
+        print(f"using obabel at:\n{which_path}\n")
+        return which_path
+
+    raise FileNotFoundError(
+        "Cannot find obabel. Please install Open Babel in the vina_test environment."
+    )
 
 def get_ca_center_of_mass(pdb_file):
     """
@@ -245,6 +261,9 @@ def parse_boxes(args):
     Parse box specifications from CLI args.
     Returns list of (center, size) tuples.
     """
+    return parse_boxes_optional(args, required=True)
+
+def parse_boxes_optional(args, required=True):
     if args.boxes:
         vals = json.loads(args.boxes)
         # Normalize flat [6] to [[6]]
@@ -254,12 +273,207 @@ def parse_boxes(args):
         for v in vals:
             if len(v) != 6:
                 raise ValueError(f"Each box must have 6 values [cx,cy,cz,sx,sy,sz], got {len(v)}")
-            boxes.append((v[:3], v[3:]))
+            boxes.append((list(map(float, v[:3])), list(map(float, v[3:]))))
         return boxes
-    elif args.box_center and args.box_size:
-        return [(args.box_center, args.box_size)]
-    else:
+    if args.box_center and args.box_size:
+        if len(args.box_center) != 3 or len(args.box_size) != 3:
+            raise ValueError("--box-center and --box-size must each contain exactly 3 values")
+        return [(list(map(float, args.box_center)), list(map(float, args.box_size)))]
+    if required:
         raise ValueError("Must provide --boxes or both --box-center and --box-size")
+    return None
+
+def boxes_to_specs(boxes):
+    specs = []
+    for center, size in boxes:
+        specs.append([
+            float(center[0]), float(center[1]), float(center[2]),
+            float(size[0]), float(size[1]), float(size[2]),
+        ])
+    return specs
+
+def specs_to_boxes(specs):
+    boxes = []
+    for idx, spec in enumerate(specs):
+        if len(spec) != 6:
+            raise ValueError(f"Invalid box spec at index {idx}: expected 6 values, got {len(spec)}")
+        boxes.append((
+            [float(spec[0]), float(spec[1]), float(spec[2])],
+            [float(spec[3]), float(spec[4]), float(spec[5])],
+        ))
+    return boxes
+
+def extract_root_atom_rows(input_pdbqt, output_pdbqt):
+    with open(input_pdbqt, "r") as f:
+        lines = f.readlines()
+
+    saw_root = False
+    saw_endroot = False
+    in_root = False
+    root_atom_rows = []
+
+    for line in lines:
+        token = line.strip()
+        if not saw_root and token == "ROOT":
+            saw_root = True
+            in_root = True
+            continue
+        if in_root and token == "ENDROOT":
+            saw_endroot = True
+            break
+        if in_root and line.startswith(("ATOM", "HETATM")):
+            root_atom_rows.append(line)
+
+    if not saw_root:
+        raise RuntimeError(f"ROOT marker not found in {input_pdbqt}")
+    if not saw_endroot:
+        raise RuntimeError(f"ENDROOT marker not found in {input_pdbqt}")
+    if not root_atom_rows:
+        raise RuntimeError(f"No ATOM/HETATM rows found between ROOT and ENDROOT in {input_pdbqt}")
+
+    with open(output_pdbqt, "w") as f:
+        f.writelines(root_atom_rows)
+
+    print(
+        f"Wrote ROOT-only receptor rows to {output_pdbqt} "
+        f"({len(root_atom_rows)} ATOM/HETATM lines)"
+    )
+
+def prepare_receptor_pdbqt_with_obabel(pdb_file, obabel_exe, outdir):
+    pdb_file = add_chain_identifier(pdb_file)
+    tmp_prefix = os.path.basename(pdb_file).rsplit(".pdb", 1)[0]
+
+    raw_pdbqt = os.path.join(outdir, f"{tmp_prefix}_obabel_raw.pdbqt")
+    filtered_pdbqt = os.path.join(outdir, f"{tmp_prefix}_root_only.pdbqt")
+
+    if os.path.exists(filtered_pdbqt) and os.path.getsize(filtered_pdbqt) > 0:
+        print(f"Reusing cached ROOT-only receptor PDBQT: {filtered_pdbqt}")
+        return os.path.abspath(filtered_pdbqt), tmp_prefix
+
+    cmd = [obabel_exe, "-ipdb", pdb_file, "-opdbqt", "-O", raw_pdbqt]
+    print(f"Running Open Babel receptor conversion: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Open Babel receptor conversion failed.\n"
+            f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+
+    if not os.path.exists(raw_pdbqt):
+        raise RuntimeError(f"Open Babel did not produce expected PDBQT file: {raw_pdbqt}")
+
+    extract_root_atom_rows(raw_pdbqt, filtered_pdbqt)
+    return os.path.abspath(filtered_pdbqt), tmp_prefix
+
+def prepare_receptors_for_boxes(pdb_file, obabel_exe, outdir, boxes):
+    receptor_pdbqt_paths = {}
+    adjusted_centers_per_box = {}
+    receptor_pdbqt_path, _ = prepare_receptor_pdbqt_with_obabel(pdb_file, obabel_exe, outdir)
+
+    for box_idx, (center, _) in enumerate(boxes):
+        receptor_pdbqt_paths[box_idx] = receptor_pdbqt_path
+        adjusted_centers_per_box[box_idx] = list(map(float, center))
+
+    return receptor_pdbqt_paths, adjusted_centers_per_box
+
+def write_receptor_manifest(prepared_dir, source_pdb, boxes, adjusted_centers_per_box, receptor_pdbqt_paths):
+    manifest_path = os.path.join(prepared_dir, "receptor_manifest.json")
+
+    boxes_input = boxes_to_specs(boxes)
+    boxes_adjusted = []
+    receptor_pdbqts = []
+
+    for idx, (_, size) in enumerate(boxes):
+        if idx not in adjusted_centers_per_box:
+            raise ValueError(f"Missing adjusted center for box{idx}")
+        if idx not in receptor_pdbqt_paths:
+            raise ValueError(f"Missing receptor PDBQT path for box{idx}")
+
+        adj = adjusted_centers_per_box[idx]
+        boxes_adjusted.append([
+            float(adj[0]), float(adj[1]), float(adj[2]),
+            float(size[0]), float(size[1]), float(size[2]),
+        ])
+        receptor_pdbqts.append(os.path.basename(receptor_pdbqt_paths[idx]))
+
+    manifest = {
+        "source_pdb": os.path.abspath(source_pdb),
+        "boxes_input": boxes_input,
+        "boxes_adjusted": boxes_adjusted,
+        "receptor_pdbqts": receptor_pdbqts,
+    }
+
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    print(f"Wrote receptor manifest to {manifest_path}")
+    return manifest_path
+
+def _specs_match(a, b, tol=1e-3):
+    if len(a) != len(b):
+        return False
+    for i in range(len(a)):
+        if len(a[i]) != len(b[i]):
+            return False
+        for j in range(len(a[i])):
+            if abs(float(a[i][j]) - float(b[i][j])) > tol:
+                return False
+    return True
+
+def load_prepared_receptors(prepared_dir, requested_boxes=None):
+    manifest_path = os.path.join(prepared_dir, "receptor_manifest.json")
+    if not os.path.exists(manifest_path):
+        raise FileNotFoundError(f"Prepared receptor manifest not found: {manifest_path}")
+
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+    if "boxes_input" not in manifest or "boxes_adjusted" not in manifest or "receptor_pdbqts" not in manifest:
+        raise ValueError(f"Invalid receptor manifest: missing required keys in {manifest_path}")
+
+    boxes_input = specs_to_boxes(manifest["boxes_input"])
+    boxes_adjusted = specs_to_boxes(manifest["boxes_adjusted"])
+
+    receptor_entries = manifest["receptor_pdbqts"]
+    if isinstance(receptor_entries, dict):
+        ordered_keys = sorted(receptor_entries.keys(), key=lambda x: int(x))
+        receptor_names = [receptor_entries[k] for k in ordered_keys]
+    else:
+        receptor_names = receptor_entries
+
+    if not (len(boxes_input) == len(boxes_adjusted) == len(receptor_names)):
+        raise ValueError(
+            "Prepared receptor manifest has inconsistent box/receptor counts: "
+            f"{len(boxes_input)} input, {len(boxes_adjusted)} adjusted, {len(receptor_names)} receptor files"
+        )
+
+    if requested_boxes is not None:
+        requested_specs = boxes_to_specs(requested_boxes)
+        manifest_specs = boxes_to_specs(boxes_input)
+        if not _specs_match(requested_specs, manifest_specs):
+            raise ValueError(
+                "Requested boxes do not match prepared receptor manifest. "
+                "Regenerate prepared receptors or pass matching --boxes."
+            )
+        boxes_to_use = requested_boxes
+    else:
+        boxes_to_use = boxes_input
+
+    adjusted_centers_per_box = {}
+    receptor_pdbqt_paths = {}
+
+    for idx, ((adj_center, _), receptor_name) in enumerate(zip(boxes_adjusted, receptor_names)):
+        receptor_path = receptor_name
+        if not os.path.isabs(receptor_path):
+            receptor_path = os.path.join(prepared_dir, receptor_path)
+        if not os.path.exists(receptor_path):
+            raise FileNotFoundError(f"Prepared receptor file missing for box{idx}: {receptor_path}")
+
+        adjusted_centers_per_box[idx] = list(map(float, adj_center))
+        receptor_pdbqt_paths[idx] = receptor_path
+
+    print(f"Loaded prepared receptors from {prepared_dir}")
+    return boxes_to_use, adjusted_centers_per_box, receptor_pdbqt_paths
 
 def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size, box_idx=0):
     import numpy as np
@@ -275,6 +489,7 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
     tmp_prefix = pdb_file.split(".pdb")[0].split("/")[-1]
     prepare_inPDB = f"{tmp_prefix}FH.pdb"
     output_filename = os.path.join(outdir, prepare_inPDB)
+    prepare_input_pdb = output_filename
 
     # Compute original CA COM before reduce2
     original_ca_com = get_ca_center_of_mass(pdb_file)
@@ -290,15 +505,21 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
             print("reduce2 STDERR:", reduce_result.stderr.decode() if reduce_result.stderr else "(no stderr)")
         if not os.path.exists(output_filename):
             print(f"WARNING: reduce2 did not produce expected output file: {output_filename}")
+            prepare_input_pdb = pdb_file
     else:
         print(f"Reusing cached reduce2 output: {output_filename}")
 
     # Detect coordinate shift introduced by reduce2
-    reduce2_ca_com = get_ca_center_of_mass(output_filename)
-    coord_shift = reduce2_ca_com - original_ca_com
-    shift_magnitude = np.linalg.norm(coord_shift)
-    print(f"reduce2 CA COM: {reduce2_ca_com}")
-    print(f"Coordinate shift from reduce2: {coord_shift} (magnitude: {shift_magnitude:.2f} A)")
+    if os.path.exists(output_filename):
+        reduce2_ca_com = get_ca_center_of_mass(output_filename)
+        coord_shift = reduce2_ca_com - original_ca_com
+        shift_magnitude = np.linalg.norm(coord_shift)
+        print(f"reduce2 CA COM: {reduce2_ca_com}")
+        print(f"Coordinate shift from reduce2: {coord_shift} (magnitude: {shift_magnitude:.2f} A)")
+    else:
+        coord_shift = np.array([0.0, 0.0, 0.0])
+        shift_magnitude = 0.0
+        print("Skipping reduce2 coordinate-shift correction because reduce2 output is unavailable.")
 
     # Adjust box centers to follow the protein
     adjusted_centers = [
@@ -315,7 +536,7 @@ def prepare_pdb(pdb_file, mk_prepare_receptor, outdir, centers, docking_box_size
 
     # mk_prepare_receptor runs per box (flexible residues are box-dependent)
     prepare_output = f"{outdir}/{tmp_prefix}FH_box{box_idx}"
-    mk_cmd = ["python", mk_prepare_receptor, "-i", output_filename, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)]
+    mk_cmd = ["python", mk_prepare_receptor, "-i", prepare_input_pdb, "-o", prepare_output, "-p", "-v", "--box_center", str(center_x), str(center_y), str(center_z), "--box_size", str(size_x), str(size_y), str(size_z)]
     result = subprocess.run(mk_cmd, capture_output=True)
 
     # If mk_prepare_receptor fails, check for histidine ambiguity first
@@ -469,17 +690,6 @@ def dock(receptorPDBQT, ligandPDBQT, centers, docking_box_size):
 if __name__ == "__main__":
     # Commandline scripts
     exe_path = "/home/yangl_pacagen_com/miniconda3/envs/vina_test/bin/"
-    vina_path = "/home/yangl_pacagen_com/miniconda3/envs/vina_test/lib/python3.11/site-packages/vina/"
-    reduce2_path = "/home/yangl_pacagen_com/miniconda3/envs/vina_test/lib/python3.11/site-packages/mmtbx/command_line/"
-    geostd_p = "/home/yangl_pacagen_com/Applications/"
-    scrub = locate_file(from_path = Path(exe_path), query_path = "scrub.py", query_name = "scrub.py")
-    mk_prepare_ligand = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_ligand.py", query_name = "mk_prepare_ligand.py")
-    mk_prepare_receptor = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_receptor.py", query_name = "mk_prepare_receptor.py")
-    # mk_export = locate_file(from_path = Path(exe_path), query_path = "mk_export.py", query_name = "mk_export.py")
-    vina = locate_file(from_path = Path(vina_path), query_path = "vina_wrapper.py", query_name = "vina_wrapper.py")
-    reduce2 = locate_file(from_path = Path(reduce2_path), query_path = "reduce2.py", query_name = "reduce2.py")
- 
-    geostd_path = locate_file(from_path = Path(geostd_p), query_path = "geostd", query_name = "geostd")
 
     # Args
     parser = argparse.ArgumentParser(description="script to run autodock Vina.", \
@@ -492,23 +702,77 @@ if __name__ == "__main__":
     parser.add_argument('--output', type=str, help="output folder")
     parser.add_argument("--smiles-col", type=str, default='SMILES', help="the name of the SMILES col")
     parser.add_argument("--skip-docked", action='store_true', help="skip molecules that are already docked")
+    parser.add_argument(
+        "--prepare-receptor-only",
+        action="store_true",
+        help="prepare receptor assets/manifest and exit without docking ligands",
+    )
+    parser.add_argument(
+        "--prepared-receptor-dir",
+        type=str,
+        help="directory containing receptor_manifest.json and prepared receptor PDBQT files",
+    )
 
     args = parser.parse_args()
 
-    pdb_file = args.pdb
-    pH = 7.4
-    boxes = parse_boxes(args)
-    outdir = args.output
+    if args.prepare_receptor_only and args.prepared_receptor_dir:
+        parser.error("--prepare-receptor-only cannot be used with --prepared-receptor-dir")
 
-    # Prepare receptor for each box once (before ligand loop)
-    receptor_pdbqts = {}
-    adjusted_centers_per_box = {}
-    for box_idx, (center, size) in enumerate(boxes):
-        tmp_prefix, adj_center = prepare_pdb(pdb_file, mk_prepare_receptor, outdir, center, size, box_idx=box_idx)
-        receptor_pdbqts[box_idx] = f"{tmp_prefix}FH_box{box_idx}.pdbqt"
-        adjusted_centers_per_box[box_idx] = adj_center
+    needs_obabel = args.prepare_receptor_only or not args.prepared_receptor_dir
+    needs_ligand_tools = not args.prepare_receptor_only
+
+    obabel_exe = None
+    scrub = None
+    mk_prepare_ligand = None
+
+    if needs_obabel:
+        obabel_exe = locate_obabel(exe_path)
+    if needs_ligand_tools:
+        scrub = locate_file(from_path = Path(exe_path), query_path = "scrub.py", query_name = "scrub.py")
+        mk_prepare_ligand = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_ligand.py", query_name = "mk_prepare_ligand.py")
+
+    needs_boxes = args.prepare_receptor_only or not args.prepared_receptor_dir
+    boxes = parse_boxes_optional(args, required=needs_boxes)
+
+    if args.prepare_receptor_only:
+        if not args.pdb:
+            parser.error("--pdb is required with --prepare-receptor-only")
+        if not args.output:
+            parser.error("--output is required with --prepare-receptor-only")
+
+        os.makedirs(args.output, exist_ok=True)
+        receptor_pdbqt_paths, adjusted_centers_per_box = prepare_receptors_for_boxes(
+            args.pdb, obabel_exe, args.output, boxes
+        )
+        write_receptor_manifest(
+            args.output, args.pdb, boxes, adjusted_centers_per_box, receptor_pdbqt_paths
+        )
+        print("Receptor preprocessing completed.")
+        sys.exit(0)
+
+    if not args.smiles:
+        parser.error("--smiles is required for docking mode")
+    if not args.output:
+        parser.error("--output is required for docking mode")
 
     parent_folder = args.output
+    os.makedirs(parent_folder, exist_ok=True)
+    pH = 7.4
+
+    if args.prepared_receptor_dir:
+        boxes, adjusted_centers_per_box, receptor_pdbqt_paths = load_prepared_receptors(
+            args.prepared_receptor_dir, requested_boxes=boxes
+        )
+    else:
+        if not args.pdb:
+            parser.error("--pdb is required when --prepared-receptor-dir is not provided")
+        receptor_pdbqt_paths, adjusted_centers_per_box = prepare_receptors_for_boxes(
+            args.pdb, obabel_exe, parent_folder, boxes
+        )
+        write_receptor_manifest(
+            parent_folder, args.pdb, boxes, adjusted_centers_per_box, receptor_pdbqt_paths
+        )
+
     tmp_df = pd.read_csv(args.smiles)
 
     # Track success and failures per (ligand, box) pair
@@ -542,7 +806,7 @@ if __name__ == "__main__":
                     ligand_prepared = True
 
                 os.chdir(box_folder)
-                receptorPDBQT_path = os.path.join(parent_folder, receptor_pdbqts[box_idx])
+                receptorPDBQT_path = receptor_pdbqt_paths[box_idx]
 
                 print(f"Docking lig{i} to box{box_idx}...")
                 dock(receptorPDBQT_path, pdbqt_out, adjusted_centers_per_box[box_idx], size)

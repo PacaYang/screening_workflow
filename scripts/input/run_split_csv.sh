@@ -13,7 +13,7 @@ set -e
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/split_csv.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/split_csv.py"
 
 # ============================================================================
 # Functions

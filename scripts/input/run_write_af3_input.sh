@@ -13,7 +13,7 @@ set -e
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/gen_af3_json_with_cmpds.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/gen_af3_json_with_cmpds.py"
 
 # ============================================================================
 # Functions
@@ -75,7 +75,8 @@ for PROTEIN in $PROTEINS; do
     python "$EXE" \
         --output-dir "$OUTDIR" \
         --input-json "$PREFOLD_JSON" \
-        --smiles-file "$SELECTED"
+        --smiles-file "$SELECTED" \
+        --smiles-col "SMILES"
     touch "$TOKEN"
 
     log_info "Completed write_af3_input for ${PROTEIN}"

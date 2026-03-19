@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--sequences", required=True, help="CSV with columns: name,sequence")
     parser.add_argument("--smiles", required=True, help="CSV with compound SMILES")
     parser.add_argument("--smi-col", default="SMILES", help="col name of SMILES")
+    parser.add_argument("--name-col", default="name", help="col name of protein name in sequences file")
     parser.add_argument("--protein", required=True, help="Protein name to select from sequence file")
     parser.add_argument("--outdir", required=True, help="Output folder for all csv files")
     parser.add_argument("--chunk", default=100000, help="The splitted csv file size")
@@ -33,13 +34,13 @@ def main():
     except Exception as e:
         sys.exit(f"Error reading sequences file {args.sequences}: {e}")
 
-    if "name" not in seq_df.columns or "sequence" not in seq_df.columns:
-        sys.exit("Sequences file must have columns: name, sequence")
+    if args.name_col not in seq_df.columns or "sequence" not in seq_df.columns:
+        sys.exit(f"Sequences file must have columns: {args.name_col}, sequence")
 
-    if args.protein not in seq_df["name"].values:
+    if args.protein not in seq_df[args.name_col].values:
         sys.exit(f"Protein '{args.protein}' not found in {args.sequences}")
 
-    seq = seq_df.loc[seq_df["name"] == args.protein, "sequence"].iloc[0]
+    seq = seq_df.loc[seq_df[args.name_col] == args.protein, "sequence"].iloc[0]
 
     # --- Read SMILES ---
     try:
@@ -52,7 +53,7 @@ def main():
 
     # --- Build combined dataframe ---
     # replicate the protein sequence for every ligand
-    out_df = smiles_df[[args.smi_col]]
+    out_df = smiles_df[[args.smi_col]].rename(columns={args.smi_col: "SMILES"})
     out_df.insert(1, "sequence", seq)
     out_df.insert(1, "label", 0)
     

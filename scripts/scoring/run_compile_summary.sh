@@ -13,7 +13,7 @@ set -e
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
-EXE="/home/yangl_pacagen_com/screening_workflow/scripts/init_select_top.py"
+EXE="/home/yangl_pacagen_com/screening_workflow/scripts/scoring/init_select_top.py"
 TARGET_N="${MASTER_TARGET_N:-3000}"
 
 # ============================================================================

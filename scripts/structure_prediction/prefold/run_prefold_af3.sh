@@ -131,7 +131,7 @@ EOFSCRIPT
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted AF3 prefold for ${protein} (Job ID: ${JOB_ID})"
-        echo "$JOB_ID" >> "${PREFOLD_DIR}/submitted_jobs.txt"
+        echo "$JOB_ID" >> "${PREFOLD_DIR}/job_ids.txt"
         return 0
     else
         log_error "Failed to submit AF3 prefold for ${protein}"
