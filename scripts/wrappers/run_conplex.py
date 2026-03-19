@@ -22,6 +22,7 @@ import pandas as pd
 import subprocess
 import sys
 import tempfile
+import shutil
 import os
 from pathlib import Path
 
@@ -76,28 +77,35 @@ def convert_conplex_output(conplex_tsv, original_df, output_csv):
 
 def run_conplex_prediction(input_tsv, output_tsv, model_path, device, batch_size, predict_script):
     """Run ConPLex prediction."""
-    cmd = [
-        'python', predict_script,
-        '--input', input_tsv,
-        '--output', output_tsv,
-        '--model-path', model_path,
-        '--device', device,
-        '--batch-size', str(batch_size)
-    ]
-
-    print(f"Running ConPLex prediction: {' '.join(cmd)}")
-
+    # Use a per-job temp cache dir to avoid races on shared NFS when multiple
+    # ConPLex jobs run in parallel (they all write Morgan/ProtBert feature caches).
+    cache_dir = tempfile.mkdtemp(prefix='conplex_cache_')
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(result.stdout)
-        if result.stderr:
-            print(f"ConPLex stderr: {result.stderr}", file=sys.stderr)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"ConPLex prediction failed: {e}", file=sys.stderr)
-        print(f"stdout: {e.stdout}", file=sys.stderr)
-        print(f"stderr: {e.stderr}", file=sys.stderr)
-        return False
+        cmd = [
+            'python', predict_script,
+            '--input', input_tsv,
+            '--output', output_tsv,
+            '--model-path', model_path,
+            '--device', device,
+            '--batch-size', str(batch_size),
+            '--cache-dir', cache_dir,
+        ]
+
+        print(f"Running ConPLex prediction: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            print(result.stdout)
+            if result.stderr:
+                print(f"ConPLex stderr: {result.stderr}", file=sys.stderr)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"ConPLex prediction failed: {e}", file=sys.stderr)
+            print(f"stdout: {e.stdout}", file=sys.stderr)
+            print(f"stderr: {e.stderr}", file=sys.stderr)
+            return False
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 def write_failed_smiles(failed_smiles, output_path):

@@ -26,9 +26,15 @@ def load_csvs_from_dir(dir_path, id_col, score_col, rename_score_to):
             raise ValueError(f"{csv_file} missing id_col '{id_col}'")
         if score_col not in df.columns:
             raise ValueError(f"{csv_file} missing score_col '{score_col}'")
+        if df.is_empty():
+            continue
+        # Cast score column to Float64 (empty CSVs read as Utf8)
+        df = df.with_columns(pl.col(score_col).cast(pl.Float64))
         dfs.append(df.select([id_col, score_col]))
     
     # Concatenate all dataframes and remove duplicates
+    if not dfs:
+        raise ValueError(f"No non-empty CSV files found in {dir_path}")
     combined = pl.concat(dfs)
     combined = combined.rename({score_col: rename_score_to})
     combined = combined.unique(subset=[id_col])
@@ -112,6 +118,9 @@ def main():
         try:
             d = load_csvs_from_dir(args.druglamp_dir, args.id_col, args.druglamp_score, "druglamp_score")
             print(f"Loaded DrugLAMP data: {len(d)} compounds")
+            if len(d) == 0:
+                print("Warning: DrugLAMP returned 0 compounds, skipping")
+                d = None
         except Exception as ex:
             print(f"Warning: Could not load DrugLAMP data: {ex}")
 
@@ -119,6 +128,9 @@ def main():
         try:
             cp = load_csvs_from_dir(args.conplex_dir, args.id_col, args.conplex_score, "conplex_score")
             print(f"Loaded ConPLex data: {len(cp)} compounds")
+            if len(cp) == 0:
+                print("Warning: ConPLex returned 0 compounds, skipping")
+                cp = None
         except Exception as ex:
             print(f"Warning: Could not load ConPLex data: {ex}")
 
