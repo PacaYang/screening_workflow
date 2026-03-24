@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Standalone script for Snakemake rule: write_prefold_boltz2
-# Generates Boltz2 YAML input for protein-only prefold.
+# Standalone script for Snakemake checkpoint: make_input_csv
+# Splits compound/sequence inputs into per-protein chunked CSVs.
 #
 
 set -e
@@ -13,8 +13,10 @@ set -e
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
-EXE="/home/ubuntu/screening_workflow/scripts/gen_boltz_yaml.py"
+SMILES_CSV="${TASK_ROOT}/Input/compounds_smiles.csv"
+EXE="${SCRIPT_DIR}/make_input_csv.py"
 
 # ============================================================================
 # Functions
@@ -40,31 +42,42 @@ get_proteins() {
 # Main
 # ============================================================================
 
-log_info "Starting write_prefold_boltz2"
+log_info "Starting make_input_csv"
+
+if [ ! -f "$SEQS_CSV" ]; then
+    log_error "Sequences CSV not found: $SEQS_CSV"
+    exit 1
+fi
+
+if [ ! -f "$SMILES_CSV" ]; then
+    log_error "SMILES CSV not found: $SMILES_CSV"
+    exit 1
+fi
 
 PROTEINS=$(get_proteins)
 
 for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
-    OUTDIR="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/prefold"
-    OUTPUT_YAML="${OUTDIR}/${PROTEIN}.yaml"
+    OUTDIR="${TASK_ROOT}/${PROTEIN}/initial_screening/inputs"
+    TOKEN="${OUTDIR}/finish.token"
 
-    if [ -f "$OUTPUT_YAML" ]; then
+    if [ -f "$TOKEN" ]; then
         log_info "Already completed for ${PROTEIN}, skipping"
         continue
     fi
 
-    conda activate boltz
+    conda activate HMSA
 
     mkdir -p "$OUTDIR"
     python "$EXE" \
-        --output "$OUTDIR" \
-        --protein-name "$PROTEIN" \
-        --protein-file "$SEQS_CSV" \
-        --protein-only
+        --sequences "$SEQS_CSV" \
+        --smiles "$SMILES_CSV" \
+        --protein "$PROTEIN" \
+        --outdir "$OUTDIR"
+    touch "$TOKEN"
 
-    log_info "Completed write_prefold_boltz2 for ${PROTEIN}"
+    log_info "Completed make_input_csv for ${PROTEIN}"
 done
 
 log_info "Done"

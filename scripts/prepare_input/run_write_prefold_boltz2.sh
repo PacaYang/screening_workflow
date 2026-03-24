@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Standalone script for Snakemake checkpoint: split_csv
-# Splits selected compounds into chunked CSVs for Vina docking.
+# Standalone script for Snakemake rule: write_prefold_boltz2
+# Generates Boltz2 YAML input for protein-only prefold.
 #
 
 set -e
@@ -13,7 +13,9 @@ set -e
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/scripts/split_csv.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
+EXE="${SCRIPT_DIR}/gen_boltz_yaml.py"
 
 # ============================================================================
 # Functions
@@ -39,44 +41,31 @@ get_proteins() {
 # Main
 # ============================================================================
 
-log_info "Starting split_csv"
+log_info "Starting write_prefold_boltz2"
 
 PROTEINS=$(get_proteins)
 
 for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
-    SELECTED="${TASK_ROOT}/${PROTEIN}/initial_screening/selected.csv"
-    PDB="${TASK_ROOT}/Input/protein_file/${PROTEIN}/${PROTEIN}.pdb"
-    OUTDIR="${TASK_ROOT}/${PROTEIN}/fine_screening/Vina/input"
+    OUTDIR="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/prefold"
+    OUTPUT_YAML="${OUTDIR}/${PROTEIN}.yaml"
 
-    # Skip if output dir already has CSV files
-    if ls "${OUTDIR}"/*.csv &>/dev/null; then
+    if [ -f "$OUTPUT_YAML" ]; then
         log_info "Already completed for ${PROTEIN}, skipping"
         continue
     fi
 
-    if [ ! -f "$SELECTED" ]; then
-        log_error "selected.csv not found for ${PROTEIN}: $SELECTED"
-        continue
-    fi
-
-    if [ ! -f "$PDB" ]; then
-        log_error "PDB file not found for ${PROTEIN}: $PDB"
-        continue
-    fi
-
-    conda activate general
+    conda activate boltz
 
     mkdir -p "$OUTDIR"
     python "$EXE" \
-        --protein-name="$PROTEIN" \
-        --pdb-file="$PDB" \
-        --smiles-file="$SELECTED" \
-        --chunk-size=100 \
-        --output-dir="$OUTDIR"
+        --output "$OUTDIR" \
+        --protein-name "$PROTEIN" \
+        --protein-file "$SEQS_CSV" \
+        --protein-only
 
-    log_info "Completed split_csv for ${PROTEIN}"
+    log_info "Completed write_prefold_boltz2 for ${PROTEIN}"
 done
 
 log_info "Done"

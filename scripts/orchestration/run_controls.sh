@@ -16,6 +16,7 @@ TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
 
 # Script directory (where the automation scripts are located)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Input files
 CONTROLS_CSV="${TASK_ROOT}/Input/controls.csv"
@@ -25,18 +26,20 @@ SEQUENCES_CSV="${TASK_ROOT}/Input/sequences.csv"
 CONTROLS_OUTPUT_DIR="${TASK_ROOT}/Controls"
 
 # Script root for helper scripts
-SCRIPT_ROOT="${SCRIPT_DIR}/scripts"
+SCRIPT_ROOT="${SCRIPTS_ROOT}"
 
 # Tools and executables
-VINA_EXE="${SCRIPT_ROOT}/docking.py"
+VINA_EXE="${SCRIPT_ROOT}/docking/docking.py"
+PREP_RECEPTOR_SCRIPT="${SCRIPT_ROOT}/prepare_input/prepare_vina_receptor.sh"
+VINA_CONDA_ENV="${VINA_CONDA_ENV:-vina}"
 BOLTZ2_EXE="/home/ubuntu/miniconda3/envs/boltz/bin/boltz"
 AF3_EXE="/home/ubuntu/Applications/alphafold3/run_alphafold.py"
 DIFFDOCK_DIR="/home/ubuntu/Applications/DiffDock/"
 DIFFDOCK_CONFIG="/home/ubuntu/Applications/DiffDock/default_inference_args.yaml"
-MD_SCRIPT="${SCRIPT_ROOT}/pbsa/run_pbsa_md.sh"
+MD_SCRIPT="${SCRIPT_ROOT}/md_pbsa/pbsa/run_pbsa_md.sh"
 PBSA_EXE="/home/ubuntu/miniconda3/envs/gmxMMPBSA/bin/gmx_MMPBSA"
 GMX_RC="/home/ubuntu/Applications/gromacs-2025.3/bin/GMXRC"
-PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/pbsa"
+PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/md_pbsa/pbsa"
 
 # Workflow control flags (set to 1 to enable, 0 to disable)
 RUN_VINA=1
@@ -118,6 +121,33 @@ print(" ".join(map(str, size)))
 EOF
 }
 
+prepare_vina_receptor_for_target() {
+    local target=$1
+    local receptor_pdbqt="${TASK_ROOT}/${target}/fine_screening/Vina/receptor/${target}.pdbqt"
+
+    if [ ! -f "$PREP_RECEPTOR_SCRIPT" ]; then
+        log_error "Receptor preparation script not found: $PREP_RECEPTOR_SCRIPT"
+        return 1
+    fi
+
+    if ! bash "$PREP_RECEPTOR_SCRIPT" \
+        --task-root "$TASK_ROOT" \
+        --protein "$target" \
+        --output "$receptor_pdbqt" \
+        --conda-env "$VINA_CONDA_ENV" >/dev/null; then
+        log_error "Receptor preparation failed for target ${target}"
+        return 1
+    fi
+
+    if [ ! -f "$receptor_pdbqt" ]; then
+        log_error "Prepared receptor PDBQT not found: $receptor_pdbqt"
+        return 1
+    fi
+
+    echo "$receptor_pdbqt"
+    return 0
+}
+
 # Function to create control-specific input directory structure
 setup_control_dirs() {
     local target=$1
@@ -140,17 +170,17 @@ submit_vina_control() {
     local INPUT_CSV="${target_dir}/input/control.csv"
     local OUTPUT_DIR="${target_dir}/Vina/output"
     local TOKEN_FILE="${OUTPUT_DIR}/vina.done"
-    local PDB_FILE="${TASK_ROOT}/Input/protein_file/${target}/${target}.pdb"
+    local RECEPTOR_PDBQT
+
+    # Prepare receptor first; terminate Vina for this control if it fails
+    if ! RECEPTOR_PDBQT=$(prepare_vina_receptor_for_target "$target"); then
+        log_error "Terminating Vina for ${target} control_${control_id} due to receptor preparation failure"
+        return 1
+    fi
 
     # Create input CSV with single SMILES
     echo "ligand_description" > "$INPUT_CSV"
     echo "$smiles" >> "$INPUT_CSV"
-
-    # Check if PDB file exists
-    if [ ! -f "$PDB_FILE" ]; then
-        log_error "PDB file not found: $PDB_FILE"
-        return 1
-    fi
 
     # Get docking box parameters
     BOX_PARAMS=$(get_box_params "$target")
@@ -170,7 +200,7 @@ submit_vina_control() {
     # Create SLURM job script
     local JOB_SCRIPT="${OUTPUT_DIR}/slurm_vina.sh"
 
-    cat > "$JOB_SCRIPT" <<EOF
+    cat > "$JOB_SCRIPT" <<EOF_JOB
 #!/bin/bash
 #SBATCH --job-name=vina_ctrl_${target}_${control_id}
 #SBATCH --constraint=${CONSTRAINT}
@@ -189,17 +219,19 @@ echo "Control: ${target} control_${control_id}"
 echo "Docking box center: ${BOX_CENTER}"
 echo "Docking box size: ${BOX_SIZE}"
 
+echo "Using receptor: ${RECEPTOR_PDBQT}"
+
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-conda activate vina
+conda activate ${VINA_CONDA_ENV}
 
 mkdir -p "${OUTPUT_DIR}"
 
-python "${VINA_EXE}" \\
-    --smiles "${INPUT_CSV}" \\
-    --pdb "${PDB_FILE}" \\
-    --box-center ${BOX_CENTER} \\
-    --box-size ${BOX_SIZE} \\
-    --output "${OUTPUT_DIR}" \\
+python "${VINA_EXE}" \
+    --smiles "${INPUT_CSV}" \
+    --receptor-pdbqt "${RECEPTOR_PDBQT}" \
+    --box-center ${BOX_CENTER} \
+    --box-size ${BOX_SIZE} \
+    --output "${OUTPUT_DIR}" \
     --smiles-col "ligand_description"
 
 if [ \$? -eq 0 ]; then
@@ -211,7 +243,7 @@ else
 fi
 
 echo "Job completed at: \$(date)"
-EOF
+EOF_JOB
 
     # Submit the job
     JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
@@ -721,7 +753,8 @@ check_prerequisites() {
         all_ok=0
     else
         echo "✓ Controls CSV found: $CONTROLS_CSV"
-        local n_controls=$(tail -n +2 "$CONTROLS_CSV" | wc -l)
+        local n_controls
+        n_controls=$(tail -n +2 "$CONTROLS_CSV" | wc -l)
         echo "  Found ${n_controls} control molecules"
     fi
 
@@ -731,6 +764,22 @@ check_prerequisites() {
         all_ok=0
     else
         echo "✓ Sequences CSV found: $SEQUENCES_CSV"
+    fi
+
+    if [ $RUN_VINA -eq 1 ]; then
+        if [ ! -f "$VINA_EXE" ]; then
+            log_error "Vina executable not found: $VINA_EXE"
+            all_ok=0
+        else
+            echo "✓ Vina executable found: $VINA_EXE"
+        fi
+
+        if [ ! -f "$PREP_RECEPTOR_SCRIPT" ]; then
+            log_error "Receptor preparation script not found: $PREP_RECEPTOR_SCRIPT"
+            all_ok=0
+        else
+            echo "✓ Receptor preparation script found: $PREP_RECEPTOR_SCRIPT"
+        fi
     fi
 
     echo ""

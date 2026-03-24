@@ -13,7 +13,8 @@ set -e
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/scripts/wrappers/run_druglamp.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXE="${SCRIPT_DIR}/wrappers/run_druglamp.py"
 CHECKPOINT="/home/ubuntu/Applications/DrugLAMP/lightning_logs/version_3/checkpoints/max_val_ausum= 1.84364.ckpt"
 CONDA_ENV="drug_lamp"
 

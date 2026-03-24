@@ -18,12 +18,13 @@ PROTEINS="JAK1JH1"
 
 # Script directory (where the automation scripts are located)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Individual workflow scripts
-BOLTZ2_SCRIPT="${SCRIPT_DIR}/run_boltz2_batch.sh"
-VINA_SCRIPT="${SCRIPT_DIR}/run_vina_batch.sh"
-DIFFDOCK_SCRIPT="${SCRIPT_DIR}/run_diffdock_batch.sh"
-MD_PBSA_SCRIPT="${SCRIPT_DIR}/run_md_pbsa_batch.sh"
+BOLTZ2_SCRIPT="${SCRIPTS_ROOT}/structure_prediction/run_boltz2_batch.sh"
+VINA_SCRIPT="${SCRIPTS_ROOT}/docking/run_vina_batch.sh"
+DIFFDOCK_SCRIPT="${SCRIPTS_ROOT}/docking/run_diffdock_batch.sh"
+MD_PBSA_SCRIPT="${SCRIPTS_ROOT}/md_pbsa/run_md_pbsa_batch.sh"
 
 # Workflow control flags (set to 1 to enable, 0 to disable)
 RUN_BOLTZ2=1
@@ -590,10 +591,10 @@ log_info "Workflow submission completed!"
 echo "Use the following commands to monitor progress:"
 echo ""
 echo "  Overall status:        $0 status"
-echo "  Boltz2 monitoring:     ${SCRIPT_DIR}/monitor_boltz2_jobs.sh"
-echo "  Vina monitoring:       ${SCRIPT_DIR}/monitor_vina_jobs.sh"
-echo "  DiffDock monitoring:   ${SCRIPT_DIR}/monitor_diffdock_jobs.sh"
-echo "  MD+PBSA monitoring:    ${SCRIPT_DIR}/monitor_md_pbsa_jobs.sh"
+echo "  Boltz2 monitoring:     ${SCRIPTS_ROOT}/monitoring/monitor_boltz2_jobs.sh"
+echo "  Vina monitoring:       ${SCRIPTS_ROOT}/monitoring/monitor_vina_jobs.sh"
+echo "  DiffDock monitoring:   ${SCRIPTS_ROOT}/monitoring/monitor_diffdock_jobs.sh"
+echo "  MD+PBSA monitoring:    ${SCRIPTS_ROOT}/monitoring/monitor_md_pbsa_jobs.sh"
 echo ""
 echo "  SLURM queue:           squeue -u \$USER"
 echo ""

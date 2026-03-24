@@ -13,8 +13,9 @@ set -e
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
-EXE="/home/ubuntu/screening_workflow/scripts/gen_boltz_yaml.py"
+EXE="${SCRIPT_DIR}/gen_boltz_yaml.py"
 
 # ============================================================================
 # Functions
@@ -36,6 +37,12 @@ get_proteins() {
     fi
 }
 
+get_selected_csv() {
+    local protein=$1
+    local rel_path="${MASTER_SELECTED_REL_PATH:-initial_screening/selected.csv}"
+    echo "${TASK_ROOT}/${protein}/${rel_path}"
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -50,7 +57,7 @@ for PROTEIN in $PROTEINS; do
     OUTDIR="/home/ubuntu/${PROTEIN}/boltz2_tmp/input"
     TOKEN="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_input.done"
     MSA="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
-    SELECTED="${TASK_ROOT}/${PROTEIN}/initial_screening/selected.csv"
+    SELECTED="$(get_selected_csv "${PROTEIN}")"
     CONFIDENCE="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
 
     if [ -f "$TOKEN" ]; then
@@ -64,7 +71,7 @@ for PROTEIN in $PROTEINS; do
     fi
 
     if [ ! -f "$SELECTED" ]; then
-        log_error "selected.csv not found for ${PROTEIN}: $SELECTED"
+        log_error "Selected compounds file not found for ${PROTEIN}: $SELECTED"
         continue
     fi
 

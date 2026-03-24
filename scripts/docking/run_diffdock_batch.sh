@@ -16,7 +16,8 @@ source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Tools
 DIFFDOCK_DIR="/home/ubuntu/Applications/DiffDock/"

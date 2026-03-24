@@ -413,47 +413,94 @@ def dock(receptorPDBQT, ligandPDBQT, centers, docking_box_size):
     return None
 
 if __name__ == "__main__":
-    # Commandline scripts
+    # Command-line setup
     exe_path = "/home/ubuntu/miniconda3/envs/vina/bin/"
-    vina_path = "/home/ubuntu/miniconda3/envs/vina/lib/python3.11/site-packages/vina/"
-    reduce2_path = "/home/ubuntu/miniconda3/pkgs/cctbx-base-2024.2-py38hbbc5a03_0/lib/python3.8/site-packages/mmtbx/command_line/" # default conda install prefix on Colab
+    reduce2_path = "/home/ubuntu/miniconda3/pkgs/cctbx-base-2024.2-py38hbbc5a03_0/lib/python3.8/site-packages/mmtbx/command_line/"
     geostd_p = "/home/ubuntu/Applications/"
-    scrub = locate_file(from_path = Path(exe_path), query_path = "scrub.py", query_name = "scrub.py")
-    mk_prepare_ligand = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_ligand.py", query_name = "mk_prepare_ligand.py")
-    mk_prepare_receptor = locate_file(from_path = Path(exe_path), query_path = "mk_prepare_receptor.py", query_name = "mk_prepare_receptor.py")
-    # mk_export = locate_file(from_path = Path(exe_path), query_path = "mk_export.py", query_name = "mk_export.py")
-    vina = locate_file(from_path = Path(vina_path), query_path = "vina_wrapper.py", query_name = "vina_wrapper.py")
-    reduce2 = locate_file(from_path = Path(reduce2_path), query_path = "reduce2.py", query_name = "reduce2.py")
- 
-    geostd_path = locate_file(from_path = Path(geostd_p), query_path = "geostd", query_name = "geostd")
 
     # Args
-    parser = argparse.ArgumentParser(description="script to run autodock Vina.", \
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--pdb", type=str, help="the protein pdb file")
+    parser = argparse.ArgumentParser(
+        description="script to run autodock Vina.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--pdb", type=str, help="the protein pdb file (used when receptor pdbqt is not provided)")
+    parser.add_argument("--receptor-pdbqt", type=str, help="prepared receptor pdbqt file")
     parser.add_argument("--smiles", type=str, help="the SMILES file")
     parser.add_argument("--boxes", type=str, help="JSON string of box specs: [[cx,cy,cz,sx,sy,sz], ...]")
-    parser.add_argument("--box-center", type=float, nargs="+",  help="(deprecated) center of the docking box")
-    parser.add_argument("--box-size", type=float, nargs="+",  help="(deprecated) the size of the docking box")
-    parser.add_argument('--output', type=str, help="output folder")
-    parser.add_argument("--smiles-col", type=str, default='SMILES', help="the name of the SMILES col")
-    parser.add_argument("--skip-docked", action='store_true', help="skip molecules that are already docked")
+    parser.add_argument("--box-center", type=float, nargs="+", help="(deprecated) center of the docking box")
+    parser.add_argument("--box-size", type=float, nargs="+", help="(deprecated) the size of the docking box")
+    parser.add_argument("--output", type=str, help="output folder")
+    parser.add_argument("--smiles-col", type=str, default="SMILES", help="the name of the SMILES col")
+    parser.add_argument("--skip-docked", action="store_true", help="skip molecules that are already docked")
 
     args = parser.parse_args()
 
-    pdb_file = args.pdb
+    if not args.receptor_pdbqt and not args.pdb:
+        parser.error("Must provide either --receptor-pdbqt or --pdb")
+
+    def validate_root_block(pdbqt_file):
+        root_line = None
+        end_line = None
+
+        with open(pdbqt_file, "r") as f:
+            for lineno, line in enumerate(f, start=1):
+                token = line.strip()
+                if token == "ROOT" and root_line is None:
+                    root_line = lineno
+                elif token == "ENDROOT":
+                    end_line = lineno
+
+        if root_line is None or end_line is None:
+            raise ValueError(f"Missing ROOT/ENDROOT markers in receptor PDBQT: {pdbqt_file}")
+        if end_line <= root_line:
+            raise ValueError(f"Invalid ROOT/ENDROOT ordering in receptor PDBQT: {pdbqt_file}")
+        if end_line - root_line <= 1:
+            raise ValueError(f"No lines between ROOT and ENDROOT in receptor PDBQT: {pdbqt_file}")
+
+    scrub = locate_file(from_path=Path(exe_path), query_path="scrub.py", query_name="scrub.py")
+    mk_prepare_ligand = locate_file(from_path=Path(exe_path), query_path="mk_prepare_ligand.py", query_name="mk_prepare_ligand.py")
+
     pH = 7.4
     boxes = parse_boxes(args)
     outdir = args.output
     os.makedirs(outdir, exist_ok=True)
 
-    # Prepare receptor for each box once (before ligand loop)
+    # Prepare receptor data for each box once (before ligand loop)
     receptor_pdbqts = {}
     adjusted_centers_per_box = {}
-    for box_idx, (center, size) in enumerate(boxes):
-        tmp_prefix, adj_center = prepare_pdb(pdb_file, mk_prepare_receptor, outdir, center, size, box_idx=box_idx)
-        receptor_pdbqts[box_idx] = f"{tmp_prefix}FH_box{box_idx}.pdbqt"
-        adjusted_centers_per_box[box_idx] = adj_center
+
+    if args.receptor_pdbqt:
+        receptor_pdbqt = os.path.abspath(args.receptor_pdbqt)
+        if not os.path.exists(receptor_pdbqt):
+            raise FileNotFoundError(f"Receptor PDBQT not found: {receptor_pdbqt}")
+
+        validate_root_block(receptor_pdbqt)
+        print(f"Using pre-prepared receptor PDBQT: {receptor_pdbqt}")
+
+        for box_idx, (center, _size) in enumerate(boxes):
+            receptor_pdbqts[box_idx] = receptor_pdbqt
+            adjusted_centers_per_box[box_idx] = center
+    else:
+        pdb_file = args.pdb
+        mk_prepare_receptor = locate_file(
+            from_path=Path(exe_path),
+            query_path="mk_prepare_receptor.py",
+            query_name="mk_prepare_receptor.py",
+        )
+        reduce2 = locate_file(from_path=Path(reduce2_path), query_path="reduce2.py", query_name="reduce2.py")
+        geostd_path = locate_file(from_path=Path(geostd_p), query_path="geostd", query_name="geostd")
+
+        for box_idx, (center, size) in enumerate(boxes):
+            tmp_prefix, adj_center = prepare_pdb(
+                pdb_file,
+                mk_prepare_receptor,
+                outdir,
+                center,
+                size,
+                box_idx=box_idx,
+            )
+            receptor_pdbqts[box_idx] = os.path.join(outdir, f"{tmp_prefix}FH_box{box_idx}.pdbqt")
+            adjusted_centers_per_box[box_idx] = adj_center
 
     parent_folder = args.output
     tmp_df = pd.read_csv(args.smiles)
@@ -469,7 +516,7 @@ if __name__ == "__main__":
 
         # Prepare ligand once per molecule
         ligand_prepared = False
-        pdbqt_out = os.path.join(lig_folder, 'prepared_ligand.pdbqt')
+        pdbqt_out = os.path.join(lig_folder, "prepared_ligand.pdbqt")
 
         for box_idx, (center, size) in enumerate(boxes):
             box_folder = os.path.join(lig_folder, f"box{box_idx}")
@@ -489,7 +536,7 @@ if __name__ == "__main__":
                     ligand_prepared = True
 
                 os.chdir(box_folder)
-                receptorPDBQT_path = os.path.join(parent_folder, receptor_pdbqts[box_idx])
+                receptorPDBQT_path = receptor_pdbqts[box_idx]
 
                 print(f"Docking lig{i} to box{box_idx}...")
                 dock(receptorPDBQT_path, pdbqt_out, adjusted_centers_per_box[box_idx], size)
@@ -500,16 +547,16 @@ if __name__ == "__main__":
             except Exception as e:
                 failed_dockings.append((i, box_idx))
                 print(f"ERROR: Failed to dock lig{i}/box{box_idx}: {str(e)}")
-                print(f"Continuing with next...")
-                error_log = os.path.join(box_folder, 'docking_error.log')
-                with open(error_log, 'w') as f:
+                print("Continuing with next...")
+                error_log = os.path.join(box_folder, "docking_error.log")
+                with open(error_log, "w") as f:
                     f.write(f"Error during docking: {str(e)}\n")
 
     # Print summary
     total_pairs = len(tmp_df) * len(boxes)
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DOCKING SUMMARY")
-    print("="*60)
+    print("=" * 60)
     print(f"Total molecules: {len(tmp_df)}")
     print(f"Boxes per molecule: {len(boxes)}")
     print(f"Total (ligand, box) pairs: {total_pairs}")
@@ -522,4 +569,4 @@ if __name__ == "__main__":
         print(f"\nFailed pairs: {failed_dockings}")
     if args.skip_docked and skipped_dockings:
         print(f"Skipped pairs: {skipped_dockings}")
-    print("="*60)
+    print("=" * 60)

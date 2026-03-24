@@ -13,7 +13,8 @@ set -e
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/scripts/init_select_top.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXE="${SCRIPT_DIR}/init_select_top.py"
 TARGET_N=3000
 
 # ============================================================================

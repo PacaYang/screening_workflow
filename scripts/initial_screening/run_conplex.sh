@@ -13,7 +13,8 @@ set -e
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-EXE="/home/ubuntu/screening_workflow/scripts/wrappers/run_conplex.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXE="${SCRIPT_DIR}/wrappers/run_conplex.py"
 MODEL="/home/ubuntu/Applications/ConPLex/models/ConPLex_v1_BindingDB.pt"
 CONDA_ENV="conplex-dti"
 

@@ -16,7 +16,8 @@ source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
 
 # Load configuration from environment or use defaults
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
-SCRIPT_ROOT="/home/ubuntu/screening_workflow/scripts"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # RoseTTAFold-All-Atom paths
 RFAA_ROOT="/home/ubuntu/Applications/RoseTTAFold-All-Atom"
@@ -54,6 +55,12 @@ get_proteins() {
     fi
 }
 
+get_selected_csv() {
+    local protein=$1
+    local rel_path="${MASTER_SELECTED_REL_PATH:-initial_screening/selected.csv}"
+    echo "${TASK_ROOT}/${protein}/${rel_path}"
+}
+
 # Function to submit protein-ligand batch job
 submit_protein_ligand_batch() {
     local protein=$1
@@ -67,7 +74,7 @@ submit_protein_ligand_batch() {
     local LOG_DIR="${LIGAND_DIR}/logs"
     local TOKEN_DIR="${OUTPUT_DIR}/token"
     local TOKEN_FILE="${TOKEN_DIR}/batch_${batch_id}.done"
-    local SELECTED_CSV="${TASK_ROOT}/${protein}/initial_screening/selected.csv"
+    local SELECTED_CSV="$(get_selected_csv "${protein}")"
     local FASTA_FILE="${FOLD_DIR}/input/${protein}.fasta"
     local PROTEIN_FOLD_OUTPUT="${FOLD_DIR}/output"
 
@@ -317,7 +324,7 @@ for PROTEIN in $PROTEINS; do
 
     # Validate protein directory structure
     PROTEIN_DIR="${TASK_ROOT}/${PROTEIN}"
-    SELECTED_CSV="${PROTEIN_DIR}/initial_screening/selected.csv"
+    SELECTED_CSV="$(get_selected_csv "${PROTEIN}")"
 
     if [ ! -f "$SELECTED_CSV" ]; then
         log_error "Selected compounds CSV not found: ${SELECTED_CSV}"

@@ -16,6 +16,8 @@ set -e
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/ubuntu/snake_test}"
 PROTEINS="${MASTER_PROTEINS:-JAK1JH1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SELF_SCRIPT="${SCRIPTS_ROOT}/orchestration/run_full_pipeline.sh"
 
 # Stage control
 START_FROM=1
@@ -85,7 +87,7 @@ cleanup() {
     echo ""
     log_error "Pipeline interrupted at stage ${CURRENT_STAGE}"
     echo "To resume, run:"
-    echo "  $0 --start-from ${CURRENT_STAGE} --task-root \"$TASK_ROOT\" --proteins \"$PROTEINS\""
+    echo "  $SELF_SCRIPT --start-from ${CURRENT_STAGE} --task-root \"$TASK_ROOT\" --proteins \"$PROTEINS\""
     echo ""
     exit 130
 }
@@ -181,12 +183,74 @@ run_stage() {
     log_info "=== Stage ${num}: ${name} — complete ==="
 }
 
+preflight_check_scripts() {
+    local required=()
+
+    if [ "$START_FROM" -le 1 ] && [ "$STOP_AFTER" -ge 1 ]; then
+        required+=("$SCRIPTS_ROOT/prepare_input/run_make_input.sh")
+    fi
+
+    if [ "$START_FROM" -le 2 ] && [ "$STOP_AFTER" -ge 2 ]; then
+        [ "$SKIP_GRAPHDTA" -eq 0 ] && required+=("$SCRIPTS_ROOT/initial_screening/run_graphdta.sh")
+        [ "$SKIP_HMSA" -eq 0 ] && required+=("$SCRIPTS_ROOT/initial_screening/run_hmsa.sh")
+        [ "$SKIP_COLDDTA" -eq 0 ] && required+=("$SCRIPTS_ROOT/initial_screening/run_colddta.sh")
+        [ "$SKIP_DRUGLAMP" -eq 0 ] && required+=("$SCRIPTS_ROOT/initial_screening/run_druglamp.sh")
+        [ "$SKIP_CONPLEX" -eq 0 ] && required+=("$SCRIPTS_ROOT/initial_screening/run_conplex.sh")
+    fi
+
+    if [ "$START_FROM" -le 3 ] && [ "$STOP_AFTER" -ge 3 ]; then
+        required+=("$SCRIPTS_ROOT/scoring/run_compile_summary.sh")
+    fi
+
+    if [ "$START_FROM" -le 4 ] && [ "$STOP_AFTER" -ge 4 ]; then
+        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_prefold_af3.sh")
+        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_prefold_boltz2.sh")
+        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_prefold_af3.sh")
+        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_prefold_boltz2.sh")
+        [ "$SKIP_ROSETTAFOLD" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_rosettafold_prefold.sh")
+        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_af3_input.sh")
+        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_boltz2_input.sh")
+        if [ "$SKIP_VINA" -eq 1 ] && [ "$SKIP_DIFFDOCK" -eq 0 ]; then
+            required+=("$SCRIPTS_ROOT/prepare_input/run_split_csv.sh")
+        fi
+    fi
+
+    if [ "$START_FROM" -le 5 ] && [ "$STOP_AFTER" -ge 5 ]; then
+        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_af3_batch.sh")
+        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_boltz2_batch.sh")
+        [ "$SKIP_VINA" -eq 0 ] && required+=("$SCRIPTS_ROOT/docking/run_vina_batch.sh")
+        [ "$SKIP_DIFFDOCK" -eq 0 ] && required+=("$SCRIPTS_ROOT/docking/run_diffdock_batch.sh")
+        [ "$SKIP_ROSETTAFOLD" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_rosettafold_batch.sh")
+        [ "$SKIP_MD_PBSA" -eq 0 ] && required+=("$SCRIPTS_ROOT/md_pbsa/run_md_pbsa_batch.sh")
+    fi
+
+    if [ "$START_FROM" -le 6 ] && [ "$STOP_AFTER" -ge 6 ]; then
+        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/af3_scores.py")
+        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/boltz2_scores.py")
+        [ "$SKIP_VINA" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/vina_scores.py")
+        if [ "$SKIP_MD_PBSA" -eq 0 ]; then
+            required+=("$SCRIPTS_ROOT/md_pbsa/pbsa/pbsa_extract_results.sh")
+            required+=("$SCRIPTS_ROOT/md_pbsa/pbsa/mapping_smiles.py")
+        fi
+    fi
+
+    local missing=0
+    local script
+    for script in "${required[@]}"; do
+        if ! check_script_exists "$script"; then
+            missing=1
+        fi
+    done
+
+    [ "$missing" -eq 0 ]
+}
+
 # ============================================================================
 # Stage 1: Make Input
 # ============================================================================
 
 stage_make_input() {
-    run_or_dry bash "$SCRIPT_DIR/run_make_input.sh"
+    run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_make_input.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
 
@@ -210,11 +274,11 @@ stage_make_input() {
 
 stage_initial_screening() {
     # Submit all enabled methods
-    [ "$SKIP_GRAPHDTA" -eq 0 ]  && run_or_dry bash "$SCRIPT_DIR/run_graphdta.sh"
-    [ "$SKIP_HMSA" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_hmsa.sh"
-    [ "$SKIP_COLDDTA" -eq 0 ]   && run_or_dry bash "$SCRIPT_DIR/run_colddta.sh"
-    [ "$SKIP_DRUGLAMP" -eq 0 ]  && run_or_dry bash "$SCRIPT_DIR/run_druglamp.sh"
-    [ "$SKIP_CONPLEX" -eq 0 ]   && run_or_dry bash "$SCRIPT_DIR/run_conplex.sh"
+    [ "$SKIP_GRAPHDTA" -eq 0 ]  && run_or_dry bash "$SCRIPTS_ROOT/initial_screening/run_graphdta.sh"
+    [ "$SKIP_HMSA" -eq 0 ]      && run_or_dry bash "$SCRIPTS_ROOT/initial_screening/run_hmsa.sh"
+    [ "$SKIP_COLDDTA" -eq 0 ]   && run_or_dry bash "$SCRIPTS_ROOT/initial_screening/run_colddta.sh"
+    [ "$SKIP_DRUGLAMP" -eq 0 ]  && run_or_dry bash "$SCRIPTS_ROOT/initial_screening/run_druglamp.sh"
+    [ "$SKIP_CONPLEX" -eq 0 ]   && run_or_dry bash "$SCRIPTS_ROOT/initial_screening/run_conplex.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "  [DRY-RUN] Would poll SLURM until all initial screening jobs finish"
@@ -264,7 +328,7 @@ stage_initial_screening() {
 # ============================================================================
 
 stage_compile_summary() {
-    run_or_dry bash "$SCRIPT_DIR/run_compile_summary.sh"
+    run_or_dry bash "$SCRIPTS_ROOT/scoring/run_compile_summary.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
 
@@ -290,14 +354,14 @@ stage_compile_summary() {
 stage_prepare_fine() {
     # 4a — Write prefold inputs
     log_info "Stage 4a: Writing prefold inputs"
-    [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPT_DIR/run_write_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_write_prefold_boltz2.sh"
+    [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_prefold_af3.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_prefold_boltz2.sh"
 
     # 4b — Submit prefold SLURM jobs
     log_info "Stage 4b: Submitting prefold jobs"
-    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/run_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_prefold_boltz2.sh"
-    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_rosettafold_prefold.sh"
+    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_prefold_af3.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_prefold_boltz2.sh"
+    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_rosettafold_prefold.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "  [DRY-RUN] Would poll SLURM until all prefold jobs finish"
@@ -334,23 +398,29 @@ stage_prepare_fine() {
 
     # 4d — Write fine screening inputs
     log_info "Stage 4d: Writing fine screening inputs"
-    [ "$SKIP_AF3" -eq 0 ]    && bash "$SCRIPT_DIR/run_write_af3_input.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && bash "$SCRIPT_DIR/run_write_boltz2_input.sh"
-    bash "$SCRIPT_DIR/run_split_csv.sh"
+    [ "$SKIP_AF3" -eq 0 ]    && bash "$SCRIPTS_ROOT/prepare_input/run_write_af3_input.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ] && bash "$SCRIPTS_ROOT/prepare_input/run_write_boltz2_input.sh"
+
+    # Vina now prepares receptor first, then generates split inputs internally.
+    # Keep explicit split step only for DiffDock-only runs (when Vina is skipped).
+    if [ "$SKIP_VINA" -eq 0 ]; then
+        echo "  Vina input chunking is handled in run_vina_batch.sh after receptor preparation"
+    elif [ "$SKIP_DIFFDOCK" -eq 0 ]; then
+        bash "$SCRIPTS_ROOT/prepare_input/run_split_csv.sh"
+    fi
 }
 
 # ============================================================================
 # Stage 5: Fine Screening
 # ============================================================================
-
 stage_fine_screening() {
     # 5a — Submit fine screening jobs
     log_info "Stage 5a: Submitting fine screening jobs"
-    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPT_DIR/run_af3_batch.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPT_DIR/run_boltz2_batch.sh"
-    [ "$SKIP_VINA" -eq 0 ]        && run_or_dry bash "$SCRIPT_DIR/run_vina_batch.sh"
-    [ "$SKIP_DIFFDOCK" -eq 0 ]    && run_or_dry bash "$SCRIPT_DIR/run_diffdock_batch.sh"
-    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPT_DIR/run_rosettafold_batch.sh"
+    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_af3_batch.sh"
+    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_boltz2_batch.sh"
+    [ "$SKIP_VINA" -eq 0 ]        && run_or_dry bash "$SCRIPTS_ROOT/docking/run_vina_batch.sh"
+    [ "$SKIP_DIFFDOCK" -eq 0 ]    && run_or_dry bash "$SCRIPTS_ROOT/docking/run_diffdock_batch.sh"
+    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_rosettafold_batch.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "  [DRY-RUN] Would poll SLURM for DiffDock, then submit MD+PBSA, then poll remaining"
@@ -369,7 +439,7 @@ stage_fine_screening() {
     # 5c — Submit MD+PBSA
     if [ "$SKIP_MD_PBSA" -eq 0 ]; then
         log_info "Stage 5c: Submitting MD+PBSA jobs"
-        bash "$SCRIPT_DIR/run_md_pbsa_batch.sh"
+        bash "$SCRIPTS_ROOT/md_pbsa/run_md_pbsa_batch.sh"
     fi
 
     # 5d — Wait for all remaining fine screening jobs
@@ -417,7 +487,7 @@ stage_collect_results() {
                 echo "  ${protein}/AF3: summary.csv already exists, skipping"
             else
                 echo "  ${protein}/AF3: collecting scores"
-                python "$SCRIPT_DIR/af3_scores.py" \
+                python "$SCRIPTS_ROOT/scoring/af3_scores.py" \
                     --af3-results-folder "${base}/fine_screening/AF3/output" \
                     --output-dir "${base}/fine_screening/AF3"
             fi
@@ -435,7 +505,7 @@ stage_collect_results() {
                     [ -f "$f" ] && tar -xzf "$f" -C "${boltz_out}/"
                 done
                 echo "  ${protein}/Boltz2: collecting scores"
-                python "$SCRIPT_DIR/boltz2_scores.py" \
+                python "$SCRIPTS_ROOT/scoring/boltz2_scores.py" \
                     --boltz-results-folder "${boltz_out}" \
                     --output-dir "${base}/fine_screening/Boltz2" \
                     --smiles "$selected"
@@ -449,7 +519,7 @@ stage_collect_results() {
                 echo "  ${protein}/Vina: results.csv already exists, skipping"
             else
                 echo "  ${protein}/Vina: collecting scores"
-                python "$SCRIPT_DIR/vina_scores.py" \
+                python "$SCRIPTS_ROOT/scoring/vina_scores.py" \
                     --vina-results-folder "${base}/fine_screening/Vina/output" \
                     --output-dir "${base}/fine_screening/Vina" \
                     --input-dir "${base}/fine_screening/Vina/input"
@@ -465,9 +535,9 @@ stage_collect_results() {
                 local pbsa_dir="${base}/fine_screening/PBSA/PBSA/PBSA"
                 local pbsa_outdir="${base}/fine_screening/PBSA"
                 echo "  ${protein}/PBSA: extracting results"
-                bash "$SCRIPT_DIR/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$pbsa_outdir"
+                bash "$SCRIPTS_ROOT/md_pbsa/pbsa/pbsa_extract_results.sh" "$pbsa_dir" "$pbsa_outdir"
                 echo "  ${protein}/PBSA: mapping SMILES"
-                python "$SCRIPT_DIR/pbsa/mapping_smiles.py" \
+                python "$SCRIPTS_ROOT/md_pbsa/pbsa/mapping_smiles.py" \
                     --collected "${pbsa_outdir}/tmp.csv" \
                     --smiles_csv "$selected" \
                     --outdir "$pbsa_outdir"
@@ -616,7 +686,7 @@ show_help() {
 Full Automation Pipeline for Screening Workflow
 ================================================
 
-Usage: run_full_pipeline.sh [OPTIONS] [COMMAND]
+Usage: ./scripts/orchestration/run_full_pipeline.sh [OPTIONS] [COMMAND]
 
 Commands:
   all              Run full pipeline (default)
@@ -652,19 +722,19 @@ Stages:
 
 Examples:
   # Run the full pipeline end-to-end
-  run_full_pipeline.sh --task-root /data/screen --proteins "JAK1JH1 EGFR"
+  ./scripts/orchestration/run_full_pipeline.sh --task-root /data/screen --proteins "JAK1JH1 EGFR"
 
   # Resume from stage 4 after fixing a prefold issue
-  run_full_pipeline.sh --start-from 4 --task-root /data/screen --proteins "JAK1JH1"
+  ./scripts/orchestration/run_full_pipeline.sh --start-from 4 --task-root /data/screen --proteins "JAK1JH1"
 
   # Run only initial screening (stages 1-3)
-  run_full_pipeline.sh --stop-after 3
+  ./scripts/orchestration/run_full_pipeline.sh --stop-after 3
 
   # Dry run to see what would execute
-  run_full_pipeline.sh --dry-run all
+  ./scripts/orchestration/run_full_pipeline.sh --dry-run all
 
   # Check progress
-  run_full_pipeline.sh status
+  ./scripts/orchestration/run_full_pipeline.sh status
 
 HELPEOF
 }
@@ -751,7 +821,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Run '$0 help' for usage information"
+            echo "Run '$SELF_SCRIPT help' for usage information"
             exit 1
             ;;
     esac
@@ -771,6 +841,11 @@ case $COMMAND in
         exit 0
         ;;
 esac
+
+if ! preflight_check_scripts; then
+    log_error "Preflight script path validation failed"
+    exit 1
+fi
 
 # Setup pipeline log
 PIPELINE_LOG="${TASK_ROOT}/pipeline.log"
@@ -802,5 +877,5 @@ run_stage 5 "fine_screening"    stage_fine_screening
 run_stage 6 "collect_results"   stage_collect_results
 
 log_info "Pipeline finished"
-echo "To check results: $0 --task-root \"$TASK_ROOT\" --proteins \"$PROTEINS\" status"
+echo "To check results: $SELF_SCRIPT --task-root \"$TASK_ROOT\" --proteins \"$PROTEINS\" status"
 echo ""
