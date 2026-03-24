@@ -71,19 +71,72 @@ get_box_params() {
     # Use Python to parse the docking box and output as JSON
     python3 <<EOF
 import pandas as pd
+import ast
 import json
+import math
 
-df = pd.read_csv("${seq_file}")
-row = df.loc[df['protein_name'] == "${protein}"].iloc[0]
+seq_file = "${seq_file}"
+df = pd.read_csv(seq_file)
+required_cols = {"protein_name", "docking box"}
+missing = required_cols.difference(df.columns)
+if missing:
+    raise ValueError(
+        f"Missing required column(s) in {seq_file}: {sorted(missing)}"
+    )
 
-cx = float(row['center_x'])
-cy = float(row['center_y'])
-cz = float(row['center_z'])
-sx = float(row['size_x'])
-sy = float(row['size_y'])
-sz = float(row['size_z'])
+row = df.loc[df["protein_name"] == "${protein}"]
+if row.empty:
+    raise ValueError(
+        f"Protein ${protein} not found in {seq_file} column protein_name"
+    )
 
-print(json.dumps([[cx, cy, cz, sx, sy, sz]]))
+cell = row["docking box"].iloc[0]
+if pd.isna(cell):
+    raise ValueError(
+        f"docking box is empty for protein ${protein} in {seq_file}"
+    )
+
+if isinstance(cell, str):
+    text = cell.strip()
+    if not text:
+        raise ValueError(
+            f"docking box is blank for protein ${protein} in {seq_file}"
+        )
+    try:
+        vals = ast.literal_eval(text)
+    except Exception:
+        vals = json.loads(text)
+else:
+    vals = cell
+
+# Normalize flat [cx,cy,cz,sx,sy,sz] into nested [[...]]
+if isinstance(vals, (list, tuple)) and vals and not isinstance(vals[0], (list, tuple)):
+    vals = [vals]
+
+if not isinstance(vals, (list, tuple)) or not vals:
+    raise ValueError(
+        f"docking box for protein ${protein} must be a non-empty list of boxes"
+    )
+
+normalized = []
+for idx, box in enumerate(vals):
+    if not isinstance(box, (list, tuple)):
+        raise ValueError(f"Box #{idx} must be a list/tuple, got {type(box).__name__}")
+    if len(box) != 6:
+        raise ValueError(f"Box #{idx} must have 6 values [cx,cy,cz,sx,sy,sz], got {len(box)}")
+
+    parsed = []
+    for j, value in enumerate(box):
+        try:
+            num = float(value)
+        except Exception:
+            raise ValueError(f"Box #{idx} value #{j} is not numeric: {value!r}")
+        if not math.isfinite(num):
+            raise ValueError(f"Box #{idx} value #{j} is not finite: {value!r}")
+        parsed.append(num)
+    normalized.append(parsed)
+
+print(json.dumps(normalized))
 EOF
 }
 
@@ -119,9 +172,21 @@ def close_boxes(a, b, tol=1e-3):
                 return False
     return True
 
+def count_atom_rows(path):
+    n = 0
+    with open(path, "r") as f:
+        for line in f:
+            if line.startswith(("ATOM", "HETATM")):
+                n += 1
+    return n
+
 try:
     with open(manifest_path, "r") as f:
         manifest = json.load(f)
+
+    if manifest.get("receptor_prep_mode") != "obabel_raw_full":
+        # Invalidate legacy caches (e.g., root_only receptor manifests)
+        sys.exit(1)
 
     manifest_boxes = normalize_boxes(manifest["boxes_input"])
     requested_boxes = normalize_boxes(json.loads(boxes_json))
@@ -141,6 +206,10 @@ try:
         if not os.path.isabs(receptor_path):
             receptor_path = os.path.join(receptor_dir, receptor_path)
         if not os.path.exists(receptor_path) or os.path.getsize(receptor_path) == 0:
+            sys.exit(1)
+        if os.path.basename(receptor_path).endswith("_root_only.pdbqt"):
+            sys.exit(1)
+        if count_atom_rows(receptor_path) < 20:
             sys.exit(1)
 except Exception:
     sys.exit(1)

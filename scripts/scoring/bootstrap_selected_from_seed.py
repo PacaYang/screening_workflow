@@ -20,13 +20,13 @@ def detect_smiles_column(df: pd.DataFrame, requested: str) -> str:
         return requested
 
     lowered = {col.lower(): col for col in df.columns}
-    for candidate in ("smiles", "ligand_description"):
+    for candidate in ("smiles", "canonical_smiles", "ligand_description"):
         if candidate in lowered:
             return lowered[candidate]
 
     raise ValueError(
         "No SMILES-like column found. Checked requested column "
-        f"'{requested}' and fallbacks: smiles, ligand_description."
+        f"'{requested}' and fallbacks: smiles, canonical_smiles, ligand_description."
     )
 
 

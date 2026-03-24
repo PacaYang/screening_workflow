@@ -20,18 +20,22 @@ SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
 
 # RoseTTAFold-All-Atom paths
 RFAA_ROOT="/home/yangl_pacagen_com/Applications/RoseTTAFold-All-Atom"
+RFAA_BASE_CONFIG="${RFAA_ROOT}/rf2aa/config/inference/base.yaml"
 RFAA_WEIGHTS="${MASTER_RFAA_WEIGHTS:-/home/yangl_pacagen_com/Applications/model_weights/RoseTTAFold/RFAA_paper_weights.pt}"
 ROSETTA_DB_UR30="${MASTER_ROSETTA_DB_UR30:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/UniRef30_2020_06/UniRef30_2020_06}"
 ROSETTA_DB_BFD="${MASTER_ROSETTA_DB_BFD:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt}"
 RFAA_CONDA_ENV="${MASTER_RFAA_CONDA_ENV:-RFAA}"
+PREFOLD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SAFE_MSA_WRAPPER="${PREFOLD_SCRIPT_DIR}/make_msa_safe.sh"
+SAFE_MSA_COMMAND_REL=""
 
 # SLURM configuration for protein folding
 PROTEIN_TIME_LIMIT="${PROTEIN_TIME_LIMIT:-48:00:00}"
-PROTEIN_MEMORY="${PROTEIN_MEMORY:-15G}"
-PROTEIN_CPUS=${PROTEIN_CPUS:-2}
+PROTEIN_MEMORY="${PROTEIN_MEMORY:-64G}"
+PROTEIN_CPUS=${PROTEIN_CPUS:-16}
 PROTEIN_EXCLUSIVE="${PROTEIN_EXCLUSIVE:-1}"
 PROTEIN_GPU_REQUEST="${PROTEIN_GPU_REQUEST:---gres=gpu:1}"
-PROTEIN_PARTITION="${PROTEIN_PARTITION:-g212}"
+PROTEIN_PARTITION="${PROTEIN_PARTITION:-g232}"
 
 # ============================================================================
 # Functions
@@ -43,6 +47,90 @@ log_info() {
 
 log_error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
+}
+
+log_warn() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: $*" >&2
+}
+
+resolve_safe_msa_command_relpath() {
+    local wrapper_path=$1
+    realpath --relative-to "$RFAA_ROOT" "$wrapper_path"
+}
+
+# Convert SLURM memory notation (e.g., 64G, 64000M, 15360) to integer GB.
+parse_memory_to_gb() {
+    local memory=$1
+    python3 - "$memory" <<'PYEOF'
+import math
+import re
+import sys
+
+raw = sys.argv[1].strip().upper()
+match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)B?", raw)
+if not match:
+    sys.exit(1)
+
+value = float(match.group(1))
+unit = match.group(2)
+
+# Bare numeric values in Slurm are megabytes.
+factor_to_gb = {
+    "": 1.0 / 1024.0,
+    "K": 1.0 / (1024.0 * 1024.0),
+    "M": 1.0 / 1024.0,
+    "G": 1.0,
+    "T": 1024.0,
+}
+
+print(int(math.ceil(value * factor_to_gb[unit])))
+PYEOF
+}
+
+# Read the RoseTTAFold base config's MSA memory target (GB).
+detect_rfaa_msa_mem_gb() {
+    [ -f "$RFAA_BASE_CONFIG" ] || return 1
+    python3 - "$RFAA_BASE_CONFIG" <<'PYEOF'
+import re
+import sys
+
+config_path = sys.argv[1]
+with open(config_path, "r", encoding="utf-8") as handle:
+    for line in handle:
+        if re.match(r"^\s*mem\s*:", line):
+            value = line.split(":", 1)[1].split("#", 1)[0].strip().strip('"').strip("'")
+            if not value:
+                break
+            try:
+                print(int(float(value)))
+                sys.exit(0)
+            except ValueError:
+                break
+sys.exit(1)
+PYEOF
+}
+
+# Ensure SLURM allocation cannot be lower than the MSA memory target.
+align_prefold_memory_with_rfaa_config() {
+    local rfaa_msa_mem_gb
+    local slurm_mem_gb
+
+    if ! rfaa_msa_mem_gb="$(detect_rfaa_msa_mem_gb)"; then
+        log_warn "Could not detect MSA mem from ${RFAA_BASE_CONFIG}; using PROTEIN_MEMORY=${PROTEIN_MEMORY}"
+        return 0
+    fi
+
+    if ! slurm_mem_gb="$(parse_memory_to_gb "${PROTEIN_MEMORY}")"; then
+        log_warn "Could not parse PROTEIN_MEMORY='${PROTEIN_MEMORY}'; expected format like 64G or 64000M"
+        return 0
+    fi
+
+    if [ "${slurm_mem_gb}" -lt "${rfaa_msa_mem_gb}" ]; then
+        log_warn "PROTEIN_MEMORY=${PROTEIN_MEMORY} is below RoseTTAFold MSA mem (${rfaa_msa_mem_gb}G); bumping to ${rfaa_msa_mem_gb}G"
+        PROTEIN_MEMORY="${rfaa_msa_mem_gb}G"
+    fi
+
+    log_info "Using PROTEIN_MEMORY=${PROTEIN_MEMORY} (RoseTTAFold MSA mem=${rfaa_msa_mem_gb}G)"
 }
 
 # Function to get protein list from environment or config
@@ -108,6 +196,7 @@ generate_protein_fold_config() {
     local config_file=$2
     local fasta_file=$3
     local output_dir=$4
+    local msa_command=$5
 
     log_info "Generating protein folding config for ${protein}"
 
@@ -122,6 +211,7 @@ output_path: "${output_dir}"
 checkpoint_path: "${RFAA_WEIGHTS}"
 
 database_params:
+  command: "${msa_command}"
   hhdb: "${pdb100_db}"
 
 protein_inputs:
@@ -162,7 +252,7 @@ submit_protein_fold_job() {
     fi
 
     # Generate config file
-    generate_protein_fold_config "$protein" "$CONFIG_FILE" "$FASTA_FILE" "$OUTPUT_DIR"
+    generate_protein_fold_config "$protein" "$CONFIG_FILE" "$FASTA_FILE" "$OUTPUT_DIR" "$SAFE_MSA_COMMAND_REL"
 
     # Create SLURM job script
     local JOB_SCRIPT="${LOG_DIR}/slurm_protein_fold.sh"
@@ -187,6 +277,7 @@ echo "Folding protein: PROTEIN_PLACEHOLDER"
 # Set database paths
 export DB_UR30="DB_UR30_PLACEHOLDER"
 export DB_BFD="DB_BFD_PLACEHOLDER"
+export RFAA_ROOT="RFAA_ROOT_PLACEHOLDER"
 
 # Activate environment
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
@@ -196,11 +287,32 @@ conda activate RFAA_CONDA_ENV_PLACEHOLDER
 cd RFAA_ROOT_PLACEHOLDER
 
 # Run protein folding
-python -m rf2aa.run_inference \
+echo "Config path: CONFIG_DIR_PLACEHOLDER/protein_fold.yaml"
+echo "MSA command override: MSA_COMMAND_PLACEHOLDER"
+if ! python -m rf2aa.run_inference \
     --config-dir CONFIG_DIR_PLACEHOLDER \
-    --config-name protein_fold
+    --config-name protein_fold; then
+    echo "ERROR: rf2aa.run_inference failed for PROTEIN_PLACEHOLDER"
+    exit 1
+fi
 
-# Create completion token
+# Validate required prefold artifacts before creating completion tokens
+REQUIRED_OUTPUTS=(
+    "OUTPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold.pdb"
+    "OUTPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold_aux.pt"
+    "OUTPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/A/t000_.msa0.a3m"
+    "OUTPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/A/t000_.ss2"
+    "OUTPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/A/t000_.hhr"
+    "OUTPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/A/t000_.atab"
+)
+for required_path in "${REQUIRED_OUTPUTS[@]}"; do
+    if [ ! -s "$required_path" ]; then
+        echo "ERROR: Missing expected prefold output: $required_path"
+        exit 1
+    fi
+done
+
+# Create completion tokens only after full validation
 touch TOKEN_FILE_PLACEHOLDER
 
 echo "Job completed at: $(date)"
@@ -222,10 +334,12 @@ EOFSCRIPT
     sed -i "s|RFAA_CONDA_ENV_PLACEHOLDER|${RFAA_CONDA_ENV}|g" "$JOB_SCRIPT"
     sed -i "s|RFAA_ROOT_PLACEHOLDER|${RFAA_ROOT}|g" "$JOB_SCRIPT"
     sed -i "s|CONFIG_DIR_PLACEHOLDER|${CONFIG_DIR}|g" "$JOB_SCRIPT"
+    sed -i "s|OUTPUT_DIR_PLACEHOLDER|${OUTPUT_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|TOKEN_FILE_PLACEHOLDER|${TOKEN_FILE}|g" "$JOB_SCRIPT"
     sed -i "s|DB_UR30_PLACEHOLDER|${ROSETTA_DB_UR30}|g" "$JOB_SCRIPT"
     sed -i "s|DB_BFD_PLACEHOLDER|${ROSETTA_DB_BFD}|g" "$JOB_SCRIPT"
     sed -i "s|PARTITION_PLACEHOLDER|${PROTEIN_PARTITION}|g" "$JOB_SCRIPT"
+    sed -i "s|MSA_COMMAND_PLACEHOLDER|${SAFE_MSA_COMMAND_REL}|g" "$JOB_SCRIPT"
 
     # Submit job
     JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
@@ -263,6 +377,26 @@ if [ ! -f "$SEQS_CSV" ]; then
     log_error "Sequences CSV not found: ${SEQS_CSV}"
     exit 1
 fi
+
+if [ ! -x "$SAFE_MSA_WRAPPER" ]; then
+    log_error "Safe MSA wrapper not found or not executable: ${SAFE_MSA_WRAPPER}"
+    exit 1
+fi
+
+if ! SAFE_MSA_COMMAND_REL="$(resolve_safe_msa_command_relpath "$SAFE_MSA_WRAPPER")"; then
+    log_error "Failed to resolve safe MSA wrapper relative to RFAA root: ${SAFE_MSA_WRAPPER}"
+    exit 1
+fi
+
+if [[ "$SAFE_MSA_COMMAND_REL" = /* ]]; then
+    log_error "Safe MSA command must be a relative path from ${RFAA_ROOT}, got: ${SAFE_MSA_COMMAND_REL}"
+    exit 1
+fi
+
+log_info "Using safe MSA command override: ${SAFE_MSA_COMMAND_REL}"
+
+# Ensure memory requested from SLURM is compatible with RoseTTAFold MSA settings.
+align_prefold_memory_with_rfaa_config
 
 # Check conda environment
 if ! conda env list | grep -q "^${RFAA_CONDA_ENV} "; then

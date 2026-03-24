@@ -28,7 +28,7 @@ POLL_INTERVAL=300
 DRY_RUN=0
 
 AF3_PLDDT_THRESHOLD=70
-TOP_FRACTION=0.3
+TOP_FRACTION=0.5
 
 MODEL_WEIGHTS_DIR="/home/yangl_pacagen_com/Applications/model_weights"
 
@@ -119,6 +119,10 @@ validate_arguments() {
 setup_runtime() {
     CHECKPOINT_DIR="${TASK_ROOT}/.af3_first_state"
     mkdir -p "$CHECKPOINT_DIR"
+    local protein
+    for protein in $PROTEINS; do
+        mkdir -p "${CHECKPOINT_DIR}/${protein}"
+    done
 
     local log_dir="${TASK_ROOT}/.pipeline_logs"
     mkdir -p "$log_dir"
@@ -144,18 +148,27 @@ step_name() {
 
 step_token() {
     local step="$1"
-    echo "${CHECKPOINT_DIR}/step${step}.done"
+    local protein="$2"
+    echo "${CHECKPOINT_DIR}/${protein}/step${step}.done"
 }
 
 mark_step_done() {
     local step="$1"
     [ "$DRY_RUN" -eq 1 ] && return 0
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$(step_token "$step")"
+    local protein
+    for protein in $PROTEINS; do
+        mkdir -p "${CHECKPOINT_DIR}/${protein}"
+        date -u +%Y-%m-%dT%H:%M:%SZ > "$(step_token "$step" "$protein")"
+    done
 }
 
 is_step_done() {
     local step="$1"
-    [ -f "$(step_token "$step")" ]
+    local protein
+    for protein in $PROTEINS; do
+        [ -f "$(step_token "$step" "$protein")" ] || return 1
+    done
+    return 0
 }
 
 run_cmd() {
@@ -429,17 +442,21 @@ show_status() {
     echo "Proteins:  ${PROTEINS}"
     echo ""
 
-    local step
-    for step in 1 2 3 4 5 6; do
-        local token
-        token="$(step_token "$step")"
-        if [ -f "$token" ]; then
-            local ts
-            ts=$(cat "$token")
-            echo "Step ${step} ($(step_name "$step")): completed (${ts})"
-        else
-            echo "Step ${step} ($(step_name "$step")): pending"
-        fi
+    local protein step
+    for protein in $PROTEINS; do
+        echo "Protein: ${protein}"
+        for step in 1 2 3 4 5 6; do
+            local token
+            token="$(step_token "$step" "$protein")"
+            if [ -f "$token" ]; then
+                local ts
+                ts=$(cat "$token")
+                echo "  Step ${step} ($(step_name "$step")): completed (${ts})"
+            else
+                echo "  Step ${step} ($(step_name "$step")): pending"
+            fi
+        done
+        echo ""
     done
 }
 

@@ -344,13 +344,12 @@ def prepare_receptor_pdbqt_with_obabel(pdb_file, obabel_exe, outdir):
     tmp_prefix = os.path.basename(pdb_file).rsplit(".pdb", 1)[0]
 
     raw_pdbqt = os.path.join(outdir, f"{tmp_prefix}_obabel_raw.pdbqt")
-    filtered_pdbqt = os.path.join(outdir, f"{tmp_prefix}_root_only.pdbqt")
 
-    if os.path.exists(filtered_pdbqt) and os.path.getsize(filtered_pdbqt) > 0:
-        print(f"Reusing cached ROOT-only receptor PDBQT: {filtered_pdbqt}")
-        return os.path.abspath(filtered_pdbqt), tmp_prefix
+    if os.path.exists(raw_pdbqt) and os.path.getsize(raw_pdbqt) > 0:
+        print(f"Reusing cached receptor PDBQT: {raw_pdbqt}")
+        return os.path.abspath(raw_pdbqt), tmp_prefix
 
-    cmd = [obabel_exe, "-ipdb", pdb_file, "-opdbqt", "-O", raw_pdbqt]
+    cmd = [obabel_exe, "-ipdb", pdb_file, "-opdbqt", "-O", raw_pdbqt, "-xr", "--addpolarh", "--partialcharge", "gasteiger"]
     print(f"Running Open Babel receptor conversion: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -362,8 +361,17 @@ def prepare_receptor_pdbqt_with_obabel(pdb_file, obabel_exe, outdir):
     if not os.path.exists(raw_pdbqt):
         raise RuntimeError(f"Open Babel did not produce expected PDBQT file: {raw_pdbqt}")
 
-    extract_root_atom_rows(raw_pdbqt, filtered_pdbqt)
-    return os.path.abspath(filtered_pdbqt), tmp_prefix
+    atom_rows = 0
+    with open(raw_pdbqt, "r") as f:
+        for line in f:
+            if line.startswith(("ATOM", "HETATM")):
+                atom_rows += 1
+
+    if atom_rows == 0:
+        raise RuntimeError(f"Open Babel receptor PDBQT has no ATOM/HETATM rows: {raw_pdbqt}")
+
+    print(f"Prepared full receptor PDBQT: {raw_pdbqt} ({atom_rows} ATOM/HETATM lines)")
+    return os.path.abspath(raw_pdbqt), tmp_prefix
 
 def prepare_receptors_for_boxes(pdb_file, obabel_exe, outdir, boxes):
     receptor_pdbqt_paths = {}
@@ -401,6 +409,7 @@ def write_receptor_manifest(prepared_dir, source_pdb, boxes, adjusted_centers_pe
         "boxes_input": boxes_input,
         "boxes_adjusted": boxes_adjusted,
         "receptor_pdbqts": receptor_pdbqts,
+        "receptor_prep_mode": "obabel_raw_full",
     }
 
     with open(manifest_path, "w") as f:

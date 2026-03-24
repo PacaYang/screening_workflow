@@ -204,9 +204,21 @@ def close_boxes(a, b, tol=1e-3):
                 return False
     return True
 
+def count_atom_rows(path):
+    n = 0
+    with open(path, "r") as f:
+        for line in f:
+            if line.startswith(("ATOM", "HETATM")):
+                n += 1
+    return n
+
 try:
     with open(manifest_path, "r") as f:
         manifest = json.load(f)
+
+    if manifest.get("receptor_prep_mode") != "obabel_raw_full":
+        # Invalidate legacy caches (e.g., root_only receptor manifests)
+        sys.exit(1)
 
     manifest_boxes = normalize_boxes(manifest["boxes_input"])
     requested_boxes = normalize_boxes(json.loads(boxes_json))
@@ -225,6 +237,10 @@ try:
         if not os.path.isabs(receptor_path):
             receptor_path = os.path.join(receptor_dir, receptor_path)
         if not os.path.exists(receptor_path) or os.path.getsize(receptor_path) == 0:
+            sys.exit(1)
+        if os.path.basename(receptor_path).endswith("_root_only.pdbqt"):
+            sys.exit(1)
+        if count_atom_rows(receptor_path) < 20:
             sys.exit(1)
 except Exception:
     sys.exit(1)
