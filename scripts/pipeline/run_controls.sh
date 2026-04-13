@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Control Molecules Workflow Script
-# This script runs workflows (Vina, Boltz2, AlphaFold3, DiffDock, MD+PBSA) on control molecules
+# This script runs workflows (Vina, Boltz2, AlphaFold3, RoseTTAFold, DiffDock, MD+PBSA) on control molecules
 # Input: task_root/Input/controls.csv with columns: target, SMILES
 #
 
@@ -25,7 +25,7 @@ SEQUENCES_CSV="${TASK_ROOT}/Input/sequences.csv"
 CONTROLS_OUTPUT_DIR="${TASK_ROOT}/Controls"
 
 # Script root for helper scripts
-SCRIPT_ROOT="${SCRIPT_DIR}"
+SCRIPT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Tools and executables
 VINA_EXE="${SCRIPT_ROOT}/docking/docking.py"
@@ -33,6 +33,10 @@ BOLTZ2_EXE="/home/yangl_pacagen_com/miniconda3/envs/boltz_test/bin/boltz"
 AF3_EXE="/home/yangl_pacagen_com/Applications/alphafold3/run_alphafold.py"
 AF3_WEIGHT_DIR="${MASTER_AF3_WEIGHT_DIR:-/home/yangl_pacagen_com/Applications/model_weights/AF3}"
 AF3_DB_DIR="${MASTER_AF3_DB_DIR:-/home/yangl_pacagen_com/Applications/model_weights/af3_db}"
+RFAA_ROOT="/home/yangl_pacagen_com/Applications/RoseTTAFold-All-Atom"
+RFAA_CONDA_ENV="${MASTER_RFAA_CONDA_ENV:-RFAA}"
+ROSETTA_DB_UR30="${MASTER_ROSETTA_DB_UR30:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/UniRef30_2020_06/UniRef30_2020_06}"
+ROSETTA_DB_BFD="${MASTER_ROSETTA_DB_BFD:-/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt}"
 DIFFDOCK_DIR="/home/yangl_pacagen_com/Applications/DiffDock/"
 DIFFDOCK_CONFIG="/home/yangl_pacagen_com/Applications/DiffDock/default_inference_args.yaml"
 MD_SCRIPT="${SCRIPT_ROOT}/md_pbsa/run_pbsa_md.sh"
@@ -44,8 +48,9 @@ PBSA_SCRIPT_DIR="${SCRIPT_ROOT}/md_pbsa"
 RUN_VINA=1
 RUN_BOLTZ2=1
 RUN_AF3=1
-RUN_DIFFDOCK=1
-RUN_MD_PBSA=1
+RUN_ROSETTAFOLD=1
+RUN_DIFFDOCK=0
+RUN_MD_PBSA=0
 COLLECT_ONLY=0
 
 # Track one receptor prep job per target for Vina controls
@@ -66,6 +71,10 @@ BOLTZ2_CPUS=2
 AF3_TIME_LIMIT="48:00:00"
 AF3_MEMORY="15G"
 AF3_CPUS=2
+
+ROSETTAFOLD_TIME_LIMIT="48:00:00"
+ROSETTAFOLD_MEMORY="15G"
+ROSETTAFOLD_CPUS=2
 
 DIFFDOCK_TIME_LIMIT="48:00:00"
 DIFFDOCK_MEMORY="15G"
@@ -93,6 +102,46 @@ log_error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
     echo "=========================================="
     echo ""
+}
+
+get_sequence_name_column() {
+    python3 - "$SEQUENCES_CSV" <<'PY'
+import pandas as pd
+import sys
+
+df = pd.read_csv(sys.argv[1], nrows=1)
+for col in ("protein_name", "name"):
+    if col in df.columns:
+        print(col)
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+get_target_sequence() {
+    local protein=$1
+
+    python3 - "$SEQUENCES_CSV" "$protein" <<'PY'
+import pandas as pd
+import sys
+
+sequences_csv = sys.argv[1]
+protein = sys.argv[2]
+
+df = pd.read_csv(sequences_csv)
+name_col = "protein_name" if "protein_name" in df.columns else "name" if "name" in df.columns else None
+if name_col is None:
+    sys.exit(1)
+
+if "sequence" not in df.columns:
+    sys.exit(1)
+
+row = df.loc[df[name_col] == protein]
+if row.empty:
+    sys.exit(1)
+
+print(str(row["sequence"].iloc[0]))
+PY
 }
 
 wait_for_slurm_jobs() {
@@ -139,7 +188,12 @@ import ast
 import json
 
 df = pd.read_csv("${SEQUENCES_CSV}")
-row = df.loc[df['name'] == "${protein}"]
+name_col = "protein_name" if "protein_name" in df.columns else "name" if "name" in df.columns else None
+if name_col is None:
+    print("ERROR: Could not find protein name column in sequences.csv (expected 'protein_name' or 'name')")
+    exit(1)
+
+row = df.loc[df[name_col] == "${protein}"]
 
 if row.empty:
     print("ERROR: Protein ${protein} not found in sequences.csv")
@@ -166,7 +220,9 @@ setup_control_dirs() {
     local control_id=$2
 
     local target_dir="${CONTROLS_OUTPUT_DIR}/${target}/control_${control_id}"
-    mkdir -p "${target_dir}"/{Vina,Boltz2,AF3,DiffDock,MD_PBSA}/output
+    mkdir -p "${target_dir}"/{Vina,Boltz2,AF3,RoseTTAFold,DiffDock,MD_PBSA}/output
+    mkdir -p "${target_dir}/RoseTTAFold"/{input,logs}
+    mkdir -p "${target_dir}/DiffDock/input"
     mkdir -p "${target_dir}/input"
 
     echo "$target_dir"
@@ -302,7 +358,10 @@ echo "Control receptor prep completed at: \$(date)"
 EOF
 
     local job_id
-    job_id=$(sbatch --parsable "$JOB_SCRIPT")
+    if ! job_id=$(sbatch --parsable "$JOB_SCRIPT"); then
+        log_error "Failed to submit receptor prep for control target ${target}"
+        return 1
+    fi
 
     if [ -n "$job_id" ]; then
         VINA_RECEPTOR_PREP_JOBS["$target"]="$job_id"
@@ -386,7 +445,10 @@ EOF
 
     # Submit the job
     local JOB_ID
-    JOB_ID=$("${sbatch_cmd[@]}" "$JOB_SCRIPT")
+    if ! JOB_ID=$("${sbatch_cmd[@]}" "$JOB_SCRIPT"); then
+        log_error "Failed to submit Vina for ${target} control_${control_id}"
+        return 1
+    fi
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted Vina for ${target} control_${control_id} (Job ID: ${JOB_ID})"
@@ -409,6 +471,7 @@ submit_boltz2_control() {
     local OUTPUT_DIR="${target_dir}/Boltz2/output"
     local TOKEN_FILE="${OUTPUT_DIR}/boltz2.done"
     local YAML_FILE="${INPUT_DIR}/control.yaml"
+    local NAME_COL
 
     # Prefolded MSA file from prefold_boltz2
     local MSA_FILE="${TASK_ROOT}/${target}/fine_screening/Boltz2/prefold/boltz_results_${target}/msa/${target}_0.csv"
@@ -435,15 +498,20 @@ submit_boltz2_control() {
     echo "SMILES" > "$TEMP_SMILES_CSV"
     echo "$smiles" >> "$TEMP_SMILES_CSV"
 
+    NAME_COL=$(get_sequence_name_column 2>/dev/null || true)
+    if [ -z "$NAME_COL" ]; then
+        log_error "Could not detect protein name column in sequences.csv for Boltz2 input generation"
+        return 1
+    fi
+
     # Use gen_boltz_yaml.py to create YAML with prefolded MSA
-    python "${SCRIPT_ROOT}/input/gen_boltz_yaml.py" \
+    if ! /home/yangl_pacagen_com/miniconda3/bin/conda run -n boltz_test python "${SCRIPT_ROOT}/input/gen_boltz_yaml.py" \
         --output "$INPUT_DIR" \
         --msa "$MSA_FILE" \
         --smiles-path "$TEMP_SMILES_CSV" \
         --protein-name "$target" \
-        --protein-file "$SEQUENCES_CSV"
-
-    if [ $? -ne 0 ]; then
+        --protein-file "$SEQUENCES_CSV" \
+        --name-col "$NAME_COL"; then
         log_error "Failed to generate Boltz2 YAML for ${target} control_${control_id}"
         return 1
     fi
@@ -494,7 +562,10 @@ echo "Job completed at: \$(date)"
 EOF
 
     # Submit the job
-    JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
+    if ! JOB_ID=$(sbatch --parsable "$JOB_SCRIPT"); then
+        log_error "Failed to submit Boltz2 for ${target} control_${control_id}"
+        return 1
+    fi
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted Boltz2 for ${target} control_${control_id} (Job ID: ${JOB_ID})"
@@ -537,13 +608,11 @@ submit_af3_control() {
     echo "$smiles" >> "$TEMP_SMILES_CSV"
 
     # Use gen_af3_json_with_cmpds.py to create JSON with prefolded data
-    python "${SCRIPT_ROOT}/input/gen_af3_json_with_cmpds.py" \
+    if ! python "${SCRIPT_ROOT}/input/gen_af3_json_with_cmpds.py" \
         --output-dir "$INPUT_DIR" \
         --input-json "$PREFOLD_JSON" \
         --smiles-file "$TEMP_SMILES_CSV" \
-        --smiles-col "SMILES"
-
-    if [ $? -ne 0 ]; then
+        --smiles-col "SMILES"; then
         log_error "Failed to generate AF3 JSON for ${target} control_${control_id}"
         return 1
     fi
@@ -607,7 +676,10 @@ exit \$EXIT_CODE
 EOF
 
     # Submit the job
-    JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
+    if ! JOB_ID=$(sbatch --parsable "$JOB_SCRIPT"); then
+        log_error "Failed to submit AF3 for ${target} control_${control_id}"
+        return 1
+    fi
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted AF3 for ${target} control_${control_id} (Job ID: ${JOB_ID})"
@@ -619,6 +691,146 @@ EOF
     fi
 }
 
+# Function to submit RoseTTAFold job for a single control
+submit_rosettafold_control() {
+    local target=$1
+    local control_id=$2
+    local smiles=$3
+    local target_dir=$4
+
+    local INPUT_DIR="${target_dir}/RoseTTAFold/input"
+    local OUTPUT_DIR="${target_dir}/RoseTTAFold/output"
+    local LOG_DIR="${target_dir}/RoseTTAFold/logs"
+    local TOKEN_DIR="${OUTPUT_DIR}/token"
+    local TOKEN_FILE="${TOKEN_DIR}/rosettafold.done"
+    local YAML_FILE="${INPUT_DIR}/control.yaml"
+    local JOB_SCRIPT="${LOG_DIR}/slurm_rosettafold.sh"
+    local PDB100_DB="/home/yangl_pacagen_com/Applications/model_weights/rosetta_db/pdb100_2021Mar03/pdb100_2021Mar03"
+
+    local FOLD_DIR="${TASK_ROOT}/${target}/fine_screening/RoseTTAFold/protein_folding"
+    local FOLD_TOKEN="${FOLD_DIR}/output/protein_fold.done"
+    local FASTA_FILE="${FOLD_DIR}/input/${target}.fasta"
+    local PROTEIN_FOLD_OUTPUT="${FOLD_DIR}/output"
+    local COMPOUND_DIR="${OUTPUT_DIR}/compound_${control_id}"
+    local JOB_NAME="${target}_ligand_${control_id}"
+
+    mkdir -p "$INPUT_DIR" "$OUTPUT_DIR" "$LOG_DIR" "$TOKEN_DIR" "$COMPOUND_DIR"
+
+    if [ ! -d "$RFAA_ROOT" ]; then
+        log_error "RoseTTAFold-All-Atom directory not found: ${RFAA_ROOT}"
+        return 1
+    fi
+
+    if [ ! -f "$FOLD_TOKEN" ]; then
+        log_error "RoseTTAFold prefold token not found for ${target}: ${FOLD_TOKEN}"
+        log_error "Please run run_rosettafold_prefold.sh first"
+        return 1
+    fi
+
+    if [ ! -f "$FASTA_FILE" ]; then
+        log_error "RoseTTAFold FASTA file not found for ${target}: ${FASTA_FILE}"
+        return 1
+    fi
+
+    cat > "$YAML_FILE" <<EOF
+defaults:
+  - base
+
+job_name: "${JOB_NAME}"
+output_path: "${COMPOUND_DIR}"
+
+database_params:
+  hhdb: ${PDB100_DB}
+
+protein_inputs:
+  A:
+    fasta_file: "${FASTA_FILE}"
+
+sm_inputs:
+  B:
+    input: |-
+      ${smiles}
+    input_type: "smiles"
+EOF
+
+cat > "$JOB_SCRIPT" <<EOF
+#!/bin/bash
+#SBATCH --job-name=rfaa_ctrl_${target}_${control_id}
+#SBATCH --time=${ROSETTAFOLD_TIME_LIMIT}
+#SBATCH --mem=${ROSETTAFOLD_MEMORY}
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=${ROSETTAFOLD_CPUS}
+#SBATCH --partition=${PARTITION}
+#SBATCH --output=${LOG_DIR}/slurm_%j.out
+#SBATCH --error=${LOG_DIR}/slurm_%j.err
+
+set +eu
+
+echo "Job started at: \$(date)"
+echo "Running on host: \$(hostname)"
+echo "Job ID: \$SLURM_JOB_ID"
+echo "Control: ${target} control_${control_id}"
+
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate ${RFAA_CONDA_ENV}
+
+export DB_UR30="${ROSETTA_DB_UR30}"
+export DB_BFD="${ROSETTA_DB_BFD}"
+
+MSA_SOURCE="${PROTEIN_FOLD_OUTPUT}/${target}_fold/A"
+MSA_DEST="${COMPOUND_DIR}/${JOB_NAME}/A"
+mkdir -p "\$MSA_DEST"
+
+if [ -d "\$MSA_SOURCE" ]; then
+    cp "\$MSA_SOURCE"/t000_.msa0.a3m "\$MSA_DEST/" 2>/dev/null || true
+    cp "\$MSA_SOURCE"/t000_.hhr "\$MSA_DEST/" 2>/dev/null || true
+    cp "\$MSA_SOURCE"/t000_.atab "\$MSA_DEST/" 2>/dev/null || true
+    cp "\$MSA_SOURCE"/t000_.ss2 "\$MSA_DEST/" 2>/dev/null || true
+else
+    echo "Warning: MSA source directory not found: \$MSA_SOURCE"
+fi
+
+cd "${RFAA_ROOT}"
+
+python -m rf2aa.run_inference \\
+    --config-dir "${INPUT_DIR}" \\
+    --config-name "control" 2>&1 | tee "${LOG_DIR}/control_${control_id}.log"
+
+INFERENCE_EXIT_CODE=\$?
+if [ \$INFERENCE_EXIT_CODE -ne 0 ]; then
+    echo "RoseTTAFold inference failed with exit code \$INFERENCE_EXIT_CODE"
+    exit 1
+fi
+
+if compgen -G "${COMPOUND_DIR}/*_aux.pt" > /dev/null; then
+    echo "${smiles}" > "${COMPOUND_DIR}/smiles.txt"
+    touch "${TOKEN_FILE}"
+    echo "RoseTTAFold completed successfully"
+    EXIT_CODE=0
+else
+    echo "RoseTTAFold finished but no *_aux.pt files were found in ${COMPOUND_DIR}"
+    EXIT_CODE=1
+fi
+
+echo "Job completed at: \$(date)"
+exit \$EXIT_CODE
+EOF
+
+    if ! JOB_ID=$(sbatch --parsable "$JOB_SCRIPT"); then
+        log_error "Failed to submit RoseTTAFold for ${target} control_${control_id}"
+        return 1
+    fi
+
+    if [ -n "$JOB_ID" ]; then
+        log_info "Submitted RoseTTAFold for ${target} control_${control_id} (Job ID: ${JOB_ID})"
+        echo "$JOB_ID" >> "${CONTROLS_OUTPUT_DIR}/submitted_jobs_rosettafold.txt"
+        return 0
+    else
+        log_error "Failed to submit RoseTTAFold for ${target} control_${control_id}"
+        return 1
+    fi
+}
+
 # Function to submit DiffDock job for a single control
 submit_diffdock_control() {
     local target=$1
@@ -626,15 +838,30 @@ submit_diffdock_control() {
     local smiles=$3
     local target_dir=$4
 
-    local INPUT_CSV="${target_dir}/input/control.csv"
+    local INPUT_CSV="${target_dir}/DiffDock/input/control.csv"
     local OUTPUT_DIR="${target_dir}/DiffDock/output"
     local TOKEN_FILE="${OUTPUT_DIR}/diffdock.done"
+    local PDB_FILE="${TASK_ROOT}/Input/protein_file/${target}/${target}.pdb"
+    local TARGET_SEQUENCE
+    local COMPLEX_NAME="${target}_control_${control_id}"
 
-    # DiffDock uses the same CSV format as Vina
-    if [ ! -f "$INPUT_CSV" ]; then
-        echo "ligand_description" > "$INPUT_CSV"
-        echo "$smiles" >> "$INPUT_CSV"
+    mkdir -p "${target_dir}/DiffDock/input"
+
+    TARGET_SEQUENCE=$(get_target_sequence "$target" 2>/dev/null || true)
+    if [ -z "$TARGET_SEQUENCE" ]; then
+        log_error "Could not find target sequence for ${target} in ${SEQUENCES_CSV}"
+        return 1
     fi
+
+    if [ ! -f "$PDB_FILE" ]; then
+        log_error "PDB file not found for DiffDock: ${PDB_FILE}"
+        return 1
+    fi
+
+    cat > "$INPUT_CSV" <<EOF
+complex_name,protein_path,ligand_description,protein_sequence
+${COMPLEX_NAME},${PDB_FILE},${smiles},${TARGET_SEQUENCE}
+EOF
 
     mkdir -p "$OUTPUT_DIR"
 
@@ -684,7 +911,10 @@ exit \$EXIT_CODE
 EOF
 
     # Submit the job
-    JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
+    if ! JOB_ID=$(sbatch --parsable "$JOB_SCRIPT"); then
+        log_error "Failed to submit DiffDock for ${target} control_${control_id}"
+        return 1
+    fi
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted DiffDock for ${target} control_${control_id} (Job ID: ${JOB_ID})"
@@ -868,7 +1098,10 @@ exit \$EXIT_CODE
 EOF
 
     # Submit the job
-    JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
+    if ! JOB_ID=$(sbatch --parsable "$JOB_SCRIPT"); then
+        log_error "Failed to submit MD+PBSA for ${target} control_${control_id}"
+        return 1
+    fi
 
     if [ -n "$JOB_ID" ]; then
         log_info "Submitted MD+PBSA for ${target} control_${control_id} (Job ID: ${JOB_ID})"
@@ -1010,6 +1243,40 @@ collect_control_results() {
             fi
         fi
 
+        # --- RoseTTAFold scores ---
+        if [ "$RUN_ROSETTAFOLD" -eq 1 ]; then
+            local rosettafold_summary="${CONTROLS_OUTPUT_DIR}/${target}/rosettafold_summary.csv"
+            if [ -f "$rosettafold_summary" ]; then
+                echo "  ${target}/RoseTTAFold: rosettafold_summary.csv already exists, skipping"
+            else
+                echo "  ${target}/RoseTTAFold: collecting scores"
+                local rf_header_written=0
+                for control_dir in "${CONTROLS_OUTPUT_DIR}/${target}"/control_*/; do
+                    [ ! -d "$control_dir" ] && continue
+                    local rf_out="${control_dir}/RoseTTAFold/output"
+                    [ ! -d "$rf_out" ] && continue
+
+                    local tmp_rf_dir
+                    tmp_rf_dir=$(mktemp -d)
+                    /home/yangl_pacagen_com/miniconda3/bin/conda run -n "${RFAA_CONDA_ENV}" python "$SCRIPT_ROOT/scoring/rosettafold_scores.py" \
+                        --rfaa-results-folder "$rf_out" \
+                        --protein-name "$target" \
+                        --output-dir "$tmp_rf_dir" 2>/dev/null || { rm -rf "$tmp_rf_dir"; continue; }
+
+                    local tmp_csv="$tmp_rf_dir/summary.csv"
+                    if [ -f "$tmp_csv" ]; then
+                        if [ "$rf_header_written" -eq 0 ]; then
+                            head -1 "$tmp_csv" > "$rosettafold_summary"
+                            rf_header_written=1
+                        fi
+                        tail -n +2 "$tmp_csv" >> "$rosettafold_summary"
+                    fi
+                    rm -rf "$tmp_rf_dir"
+                done
+                [ -f "$rosettafold_summary" ] && echo "  ${target}/RoseTTAFold: wrote $rosettafold_summary"
+            fi
+        fi
+
         # --- PBSA scores ---
         if [ "$RUN_MD_PBSA" -eq 1 ]; then
             local pbsa_summary="${CONTROLS_OUTPUT_DIR}/${target}/pbsa_summary.csv"
@@ -1089,6 +1356,38 @@ check_prerequisites() {
         all_ok=0
     else
         echo "✓ Sequences CSV found: $SEQUENCES_CSV"
+        local sequence_name_col
+        sequence_name_col=$(get_sequence_name_column 2>/dev/null || true)
+        if [ -z "$sequence_name_col" ]; then
+            log_error "Could not detect protein name column in sequences.csv (expected 'protein_name' or 'name')"
+            all_ok=0
+        else
+            echo "  Protein name column: ${sequence_name_col}"
+        fi
+    fi
+
+    if [ "$RUN_ROSETTAFOLD" -eq 1 ]; then
+        if [ ! -d "$RFAA_ROOT" ]; then
+            log_error "RoseTTAFold-All-Atom directory not found: ${RFAA_ROOT}"
+            all_ok=0
+        else
+            echo "✓ RoseTTAFold root found: ${RFAA_ROOT}"
+        fi
+    fi
+
+    if [ "$RUN_DIFFDOCK" -eq 1 ]; then
+        if [ ! -d "$DIFFDOCK_DIR" ]; then
+            log_error "DiffDock directory not found: ${DIFFDOCK_DIR}"
+            all_ok=0
+        else
+            echo "✓ DiffDock directory found: ${DIFFDOCK_DIR}"
+        fi
+        if [ ! -f "$DIFFDOCK_CONFIG" ]; then
+            log_error "DiffDock config not found: ${DIFFDOCK_CONFIG}"
+            all_ok=0
+        else
+            echo "✓ DiffDock config found: ${DIFFDOCK_CONFIG}"
+        fi
     fi
 
     echo ""
@@ -1114,7 +1413,7 @@ Control Molecules Workflow Script
 Usage: $0 [OPTIONS]
 
 This script processes control molecules from task_root/Input/controls.csv
-and runs selected workflows (Vina, Boltz2, AF3, DiffDock, MD+PBSA) for each control.
+and runs selected workflows (Vina, Boltz2, AF3, RoseTTAFold, DiffDock, MD+PBSA) for each control.
 
 Input File Format (controls.csv):
   Columns: target, SMILES
@@ -1130,6 +1429,10 @@ Prerequisites:
     {task_root}/{target}/fine_screening/AF3/prefold/{target}/{target}_data.json
     Run 'prefold_af3' from Snakefile first
 
+  - For RoseTTAFold: Prefolded protein fold must exist at:
+    {task_root}/{target}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done
+    Run 'run_rosettafold_prefold.sh' first
+
   - For MD+PBSA: DiffDock must complete first to generate SDF files
 
 Options:
@@ -1137,18 +1440,21 @@ Options:
   --skip-vina          Skip Vina workflow
   --skip-boltz2        Skip Boltz2 workflow
   --skip-af3           Skip AlphaFold3 workflow
-  --skip-diffdock      Skip DiffDock workflow
-  --skip-md-pbsa       Skip MD+PBSA workflow
+  --skip-rosettafold   Skip RoseTTAFold workflow
+  --run-diffdock       Enable DiffDock workflow (disabled by default)
+  --run-md-pbsa        Enable MD+PBSA workflow (disabled by default)
+  --skip-diffdock      Skip DiffDock workflow (useful with --run-diffdock)
+  --skip-md-pbsa       Skip MD+PBSA workflow (useful with --run-md-pbsa)
   --collect-only       Skip job submission, only collect results from completed jobs
   --poll-interval SEC  Set SLURM polling interval in seconds (default: 300)
   --help               Show this help message
 
 Examples:
-  # Run all workflows (default)
+  # Run default workflows (Vina, Boltz2, AF3, RoseTTAFold)
   $0
 
-  # Run only Vina and Boltz2
-  $0 --skip-af3 --skip-diffdock --skip-md-pbsa
+  # Run all workflows including DiffDock and MD+PBSA
+  $0 --run-diffdock --run-md-pbsa
 
   # Use custom task root
   $0 --task-root /path/to/data
@@ -1165,6 +1471,7 @@ Configuration:
     Vina: $([ $RUN_VINA -eq 1 ] && echo "Yes" || echo "No")
     Boltz2: $([ $RUN_BOLTZ2 -eq 1 ] && echo "Yes" || echo "No")
     AlphaFold3: $([ $RUN_AF3 -eq 1 ] && echo "Yes" || echo "No")
+    RoseTTAFold: $([ $RUN_ROSETTAFOLD -eq 1 ] && echo "Yes" || echo "No")
     DiffDock: $([ $RUN_DIFFDOCK -eq 1 ] && echo "Yes" || echo "No")
     MD+PBSA: $([ $RUN_MD_PBSA -eq 1 ] && echo "Yes" || echo "No")
 
@@ -1176,17 +1483,19 @@ Output Structure:
     │       ├── Vina/output/
     │       ├── Boltz2/{input,output}/
     │       ├── AF3/{input,output}/
+    │       ├── RoseTTAFold/{input,logs,output}/
     │       ├── DiffDock/output/
     │       └── MD_PBSA/{MD,PBSA}/
 
 Input File Generation:
   - Boltz2: Uses scripts/gen_boltz_yaml.py with prefolded MSA
   - AF3: Uses scripts/gen_af3_json_with_cmpds.py with prefolded data.json
+  - RoseTTAFold: Writes per-control YAML from controls.csv (does not use selected.csv)
 
 Notes:
   - MD+PBSA requires DiffDock to complete first (produces SDF files)
-  - Boltz2 and AF3 use prefolded protein structures with MSA and templates
-  - All algorithms run by default, use --skip-* flags to disable
+  - Boltz2, AF3, and RoseTTAFold use prefolded protein artifacts
+  - DiffDock and MD+PBSA are disabled by default; enable with --run-diffdock/--run-md-pbsa
   - Job IDs are saved to ${CONTROLS_OUTPUT_DIR}/submitted_jobs_*.txt
 
 EOF
@@ -1216,6 +1525,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-af3)
             RUN_AF3=0
+            shift
+            ;;
+        --skip-rosettafold)
+            RUN_ROSETTAFOLD=0
+            shift
+            ;;
+        --run-diffdock)
+            RUN_DIFFDOCK=1
+            shift
+            ;;
+        --run-md-pbsa)
+            RUN_MD_PBSA=1
             shift
             ;;
         --skip-diffdock)
@@ -1277,6 +1598,7 @@ else
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina_receptor.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
+    > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_rosettafold.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
     > "${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt"
 
@@ -1297,9 +1619,10 @@ else
 
         # Submit workflows
         if [ $RUN_VINA -eq 1 ]; then
-            BOXES_JSON=$(get_box_params "$target")
-            if [ $? -ne 0 ] || [ -z "$BOXES_JSON" ]; then
+            if ! BOXES_JSON=$(get_box_params "$target"); then
                 log_error "Failed to get box parameters for ${target}; skipping Vina for this control"
+            elif [ -z "$BOXES_JSON" ]; then
+                log_error "Empty box parameters for ${target}; skipping Vina for this control"
             else
                 if [ -z "${VINA_RECEPTOR_PREP_JOBS[$target]+x}" ]; then
                     submit_vina_receptor_prep "$target" "$BOXES_JSON" || \
@@ -1320,6 +1643,10 @@ else
 
         if [ $RUN_AF3 -eq 1 ]; then
             submit_af3_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
+        fi
+
+        if [ $RUN_ROSETTAFOLD -eq 1 ]; then
+            submit_rosettafold_control "$target" "$CONTROL_ID" "$smiles" "$TARGET_DIR" || true
         fi
 
         if [ $RUN_DIFFDOCK -eq 1 ]; then
@@ -1343,6 +1670,7 @@ else
     echo "  Vina prep:${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina_receptor.txt"
     echo "  Boltz2:   ${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt"
     echo "  AF3:      ${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt"
+    echo "  RoseTTAFold: ${CONTROLS_OUTPUT_DIR}/submitted_jobs_rosettafold.txt"
     echo "  DiffDock: ${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt"
     echo "  MD+PBSA:  ${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt"
     echo ""
@@ -1352,6 +1680,7 @@ else
     wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_vina.txt" "Vina"
     wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_boltz2.txt" "Boltz2"
     wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_af3.txt" "AF3"
+    wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_rosettafold.txt" "RoseTTAFold"
     wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_diffdock.txt" "DiffDock"
     wait_for_slurm_jobs "${CONTROLS_OUTPUT_DIR}/submitted_jobs_md_pbsa.txt" "MD+PBSA"
 
