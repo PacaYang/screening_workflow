@@ -49,6 +49,11 @@ CONFIG_FILE=""
 RESUME_ID=""
 COMMAND="run"
 
+# Template mode — single-stage folding (no prefold/MSA), template-based,
+# multi-chain / multi-ligand. Off by default (uses the two-stage prefold flow).
+TEMPLATE_MODE=0
+N_LIGANDS=1
+
 # Streaming collection configuration
 STREAMING_COLLECTION=1  # Default to streaming
 COLLECTION_INTERVAL=3600
@@ -99,6 +104,10 @@ Options:
   --poll-interval SEC      Job poll interval (default: 300)
   --skip-<method>          Skip specific methods
   --target-n N             Compounds for fine screening (default: 3000)
+  --template-mode          Single-stage folding: skip prefold/MSA, use template
+                           (Input/protein_file/<P>/<P>.cif for Boltz2,
+                           <P>_<CHAIN>.cif for AF3), multi-chain & multi-ligand
+  --n-ligands N            Compounds to co-fold per prediction (default 1, id Z)
   --streaming-collection   Use streaming results collection (default)
   --batch-collection       Use batch results collection
   --collection-interval N  Seconds between collection runs (default: 3600)
@@ -170,6 +179,8 @@ parse_arguments() {
             --skip-diffdock) SKIP_DIFFDOCK=1; shift ;;
             --skip-md-pbsa) SKIP_MD_PBSA=1; shift ;;
             --target-n) TARGET_N="$2"; shift 2 ;;
+            --template-mode) TEMPLATE_MODE=1; shift ;;
+            --n-ligands) N_LIGANDS="$2"; shift 2 ;;
             --streaming-collection) STREAMING_COLLECTION=1; shift ;;
             --batch-collection) STREAMING_COLLECTION=0; shift ;;
             --collection-interval) COLLECTION_INTERVAL="$2"; shift 2 ;;
@@ -228,6 +239,8 @@ execute_stage() {
             [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
             [ "$SKIP_BOLTZ2" -eq 1 ] && args+=(--skip-boltz2)
             [ "$SKIP_ROSETTAFOLD" -eq 1 ] && args+=(--skip-rosettafold)
+            [ "$TEMPLATE_MODE" -eq 1 ] && args+=(--template-mode)
+            args+=(--n-ligands "$N_LIGANDS")
             ;;
         5)
             [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
@@ -236,6 +249,7 @@ execute_stage() {
             [ "$SKIP_VINA" -eq 1 ] && args+=(--skip-vina)
             [ "$SKIP_DIFFDOCK" -eq 1 ] && args+=(--skip-diffdock)
             [ "$SKIP_MD_PBSA" -eq 1 ] && args+=(--skip-md-pbsa)
+            [ "$TEMPLATE_MODE" -eq 1 ] && args+=(--template-mode)
             ;;
         6)
             [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
@@ -285,6 +299,8 @@ run_pipeline() {
     export MASTER_MODEL_WEIGHTS_DIR="$MODEL_WEIGHTS_DIR"
     export MASTER_AF3_WEIGHT_DIR="${MODEL_WEIGHTS_DIR}/AF3"
     export MASTER_AF3_DB_DIR="${MODEL_WEIGHTS_DIR}/af3_db"
+    export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+    export MASTER_N_LIGANDS="$N_LIGANDS"
 
     start_progress_monitor "$TASK_ROOT" "$PROTEINS" "full" "$POLL_INTERVAL"
     refresh_progress_monitor

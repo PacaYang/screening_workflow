@@ -34,6 +34,11 @@ LIGAND_CPUS=2
 LIGAND_GPU_REQUEST=""
 LIGAND_PARTITION="g24"
 
+# Template mode (single stage, no prefold MSA) and multi-ligand config
+TEMPLATE_MODE="${MASTER_TEMPLATE_MODE:-0}"
+N_LIGANDS="${MASTER_N_LIGANDS:-1}"
+SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
+
 # ============================================================================
 # Functions
 # ============================================================================
@@ -362,6 +367,260 @@ EOFSCRIPT
 }
 
 # ============================================================================
+# Template-mode batch submission (single stage: no prefold, template + no MSA,
+# multi-chain & multi-ligand). Gated behind MASTER_TEMPLATE_MODE=1.
+# ============================================================================
+
+submit_template_batch() {
+    local protein=$1
+    local batch_id=$2
+
+    local RFAA_DIR="${TASK_ROOT}/${protein}/fine_screening/RoseTTAFold"
+    local LIGAND_DIR="${RFAA_DIR}/protein_ligand"
+    local OUTPUT_DIR="${LIGAND_DIR}/output"
+    local INPUT_DIR="${LIGAND_DIR}/input"
+    local CONFIG_DIR="${LIGAND_DIR}/config"
+    local LOG_DIR="${LIGAND_DIR}/logs"
+    local TOKEN_DIR="${OUTPUT_DIR}/token"
+    local TOKEN_FILE="${TOKEN_DIR}/batch_${batch_id}.done"
+    local LEDGER_FILE="${OUTPUT_DIR}/job_results.tsv"
+    local LEDGER_HELPER="${SCRIPT_ROOT}/pipeline/lib/job_result_ledger.sh"
+    local SELECTED_CSV="${TASK_ROOT}/${protein}/initial_screening/selected.csv"
+    # Single multi-chain PDB template (RFAA reads PDB templates).
+    local TEMPLATE_PDB="${TASK_ROOT}/Input/protein_file/${protein}/${protein}.pdb"
+
+    if [ -f "$TOKEN_FILE" ]; then
+        log_info "Batch ${batch_id} already completed for ${protein}, skipping"
+        return 0
+    fi
+
+    mkdir -p "$OUTPUT_DIR" "$CONFIG_DIR" "$LOG_DIR" "$TOKEN_DIR" "$INPUT_DIR"
+
+    if [ ! -f "$SELECTED_CSV" ]; then
+        log_error "Selected CSV not found: $SELECTED_CSV"
+        return 1
+    fi
+    if [ ! -f "$TEMPLATE_PDB" ]; then
+        log_error "Template PDB not found for ${protein}: $TEMPLATE_PDB"
+        return 1
+    fi
+
+    # Write one FASTA per chain from the comma-separated sequence cell.
+    # FASTA files are named <protein>_<CHAIN>.fasta and reused across batches.
+    python3 - "$SEQS_CSV" "$protein" "$INPUT_DIR" <<'PYEOF'
+import sys, string
+import pandas as pd
+seqs_csv, protein, input_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+df = pd.read_csv(seqs_csv)
+cell = df.loc[df['name'] == protein, 'sequence'].iloc[0]
+chains = [c.strip() for c in str(cell).split(',') if c.strip()]
+for cid, seq in zip(string.ascii_uppercase, chains):
+    with open(f"{input_dir}/{protein}_{cid}.fasta", 'w') as f:
+        f.write(f">{protein}_{cid}\n{seq}\n")
+print(len(chains))
+PYEOF
+
+    local N_CHAINS
+    N_CHAINS=$(python3 -c "import pandas as pd; df=pd.read_csv('${SEQS_CSV}'); cell=df.loc[df['name']=='${protein}','sequence'].iloc[0]; print(len([c for c in str(cell).split(',') if c.strip()]))")
+
+    local JOB_SCRIPT="${LOG_DIR}/slurm_template_batch_${batch_id}.sh"
+
+    cat > "$JOB_SCRIPT" <<'EOFSCRIPT'
+#!/bin/bash
+#SBATCH --job-name=rfaa_tmpl_PROTEIN_PLACEHOLDER_bBATCH_ID_PLACEHOLDER
+#SBATCH --time=TIME_LIMIT_PLACEHOLDER
+#SBATCH --mem=MEMORY_PLACEHOLDER
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=CPUS_PLACEHOLDER
+#SBATCH --partition=PARTITION_PLACEHOLDER
+#SBATCH --output=LOG_DIR_PLACEHOLDER/slurm_template_batch_BATCH_ID_PLACEHOLDER_%j.out
+#SBATCH --error=LOG_DIR_PLACEHOLDER/slurm_template_batch_BATCH_ID_PLACEHOLDER_%j.err
+
+set -e
+
+echo "Job started at: $(date)"
+echo "Template-mode RFAA: protein PROTEIN_PLACEHOLDER, batch BATCH_ID_PLACEHOLDER"
+
+source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
+conda activate RFAA_CONDA_ENV_PLACEHOLDER
+
+# N_LIGANDS compounds are co-folded per prediction (chunked).
+N_LIGANDS=N_LIGANDS_PLACEHOLDER
+N_COMPOUNDS=$(tail -n +2 SELECTED_CSV_PLACEHOLDER | wc -l)
+# Number of predictions (chunks) total, and per batch.
+N_CHUNKS=$(( (N_COMPOUNDS + N_LIGANDS - 1) / N_LIGANDS ))
+CHUNKS_PER_BATCH=$(( (N_CHUNKS + N_BATCHES_PLACEHOLDER - 1) / N_BATCHES_PLACEHOLDER ))
+START_CHUNK=$((BATCH_ID_PLACEHOLDER * CHUNKS_PER_BATCH))
+END_CHUNK=$((START_CHUNK + CHUNKS_PER_BATCH))
+[ $END_CHUNK -gt $N_CHUNKS ] && END_CHUNK=$N_CHUNKS
+
+echo "Processing chunks ${START_CHUNK} to $((END_CHUNK - 1)) (N_chunks=${N_CHUNKS}, n_ligands=${N_LIGANDS})"
+
+LOCAL_OUT=/tmp/rfaa_tmpl_PROTEIN_PLACEHOLDER_BATCH_ID_PLACEHOLDER_${SLURM_JOB_ID}
+mkdir -p $LOCAL_OUT
+cd RFAA_ROOT_PLACEHOLDER
+
+SUCCESS_COUNT=0
+FAIL_COUNT=0
+BATCH_TARGETS_FILE="${LOCAL_OUT}/batch_targets.txt"
+: > "$BATCH_TARGETS_FILE"
+
+for chunk in $(seq $START_CHUNK $((END_CHUNK - 1))); do
+    echo "Processing chunk: $chunk"
+
+    # Build the protein_inputs and sm_inputs YAML fragments + extract SMILES for
+    # the N_LIGANDS compounds in this chunk. The screened compounds get ids
+    # Z, Y, X... (Z first) to stay compatible with downstream scoring.
+    FRAGMENT=$(python3 - "SELECTED_CSV_PLACEHOLDER" "$chunk" "$N_LIGANDS" "INPUT_DIR_PLACEHOLDER" "PROTEIN_PLACEHOLDER" "N_CHAINS_PLACEHOLDER" <<PYEOF
+import sys, string
+import pandas as pd
+csv, chunk, n_lig, input_dir, protein, n_chains = sys.argv[1:7]
+chunk = int(chunk); n_lig = int(n_lig); n_chains = int(n_chains)
+df = pd.read_csv(csv)
+smi_col = next((c for c in ['smiles','SMILES','Smiles'] if c in df.columns), None)
+start = chunk * n_lig
+rows = df.iloc[start:start + n_lig]
+chain_ids = list(string.ascii_uppercase[:n_chains])
+lig_ids = [string.ascii_uppercase[-1 - i] for i in range(len(rows))]  # Z, Y, X...
+prot_lines = []
+for cid in chain_ids:
+    prot_lines.append(f"  {cid}:")
+    prot_lines.append(f"    fasta_file: \"{input_dir}/{protein}_{cid}.fasta\"")
+sm_lines = []
+for lid, (_, row) in zip(lig_ids, rows.iterrows()):
+    sm_lines.append(f"  {lid}:")
+    sm_lines.append(f"    input: \"{row[smi_col]}\"")
+    sm_lines.append(f"    input_type: \"smiles\"")
+# Emit: job_id on first line, then PROTEIN block marker, then SM block marker.
+print(f"compound_{start}")
+print("===PROTEIN===")
+print("\n".join(prot_lines))
+print("===SM===")
+print("\n".join(sm_lines))
+PYEOF
+)
+
+    COMPOUND_ID=$(echo "$FRAGMENT" | sed -n '1p')
+    PROT_BLOCK=$(echo "$FRAGMENT" | awk '/===PROTEIN===/{f=1;next}/===SM===/{f=0}f')
+    SM_BLOCK=$(echo "$FRAGMENT" | awk '/===SM===/{f=1;next}f')
+    echo "${COMPOUND_ID}" >> "$BATCH_TARGETS_FILE"
+
+    COMPOUND_OUTPUT="${LOCAL_OUT}/${COMPOUND_ID}"
+    mkdir -p "$COMPOUND_OUTPUT"
+    COMPOUND_CONFIG="${LOCAL_OUT}/config_${COMPOUND_ID}.yaml"
+
+    cat > "$COMPOUND_CONFIG" <<CFGEOF
+defaults:
+  - base
+
+job_name: "PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
+output_path: "${COMPOUND_OUTPUT}"
+
+loader_params:
+  n_templ: 4
+  MAXLAT: 32
+  MAXSEQ: 128
+  MAXCYCLE: 4
+  BLACK_HOLE_INIT: True
+  seqid: 150.0
+
+protein_inputs:
+${PROT_BLOCK}
+
+# NOTE: template-mode — verify the template input key against the installed
+# RoseTTAFold-All-Atom version. Provide the multi-chain PDB template here.
+template_inputs:
+  template_pdb: "TEMPLATE_PDB_PLACEHOLDER"
+
+sm_inputs:
+${SM_BLOCK}
+CFGEOF
+
+    if python -m rf2aa.run_inference \
+        --config-dir "${LOCAL_OUT}" \
+        --config-name "config_${COMPOUND_ID}" 2>&1 | tee "${LOCAL_OUT}/${COMPOUND_ID}.log"; then
+        echo "  SUCCESS: chunk $chunk ($COMPOUND_ID)"
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    else
+        echo "  FAILED: chunk $chunk ($COMPOUND_ID)"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+done
+
+echo "Batch processing complete: success=${SUCCESS_COUNT} failed=${FAIL_COUNT}"
+
+# Copy results directly to the output directory.
+if [ $SUCCESS_COUNT -gt 0 ]; then
+    for compound_dir in "$LOCAL_OUT"/compound_*; do
+        [ -d "$compound_dir" ] || continue
+        compound_name=$(basename "$compound_dir")
+        output_dir="OUTPUT_DIR_PLACEHOLDER/${compound_name}"
+        mkdir -p "$output_dir"
+
+        aux_file=$(find "$compound_dir" -maxdepth 1 -name "*_aux.pt" | head -1)
+        [ -f "$aux_file" ] && cp "$aux_file" "$output_dir/"
+        pdb_file=$(find "$compound_dir" -maxdepth 1 -name "*.pdb" | head -1)
+        [ -f "$pdb_file" ] && cp "$pdb_file" "$output_dir/structure.pdb"
+    done
+fi
+
+# Validate copied outputs and append batch result to the job ledger.
+EXPECTED_COUNT=$(sort -u "$BATCH_TARGETS_FILE" | sed '/^$/d' | wc -l)
+COMPLETED_COUNT=0
+while IFS= read -r target_compound; do
+    [ -z "$target_compound" ] && continue
+    if compgen -G "OUTPUT_DIR_PLACEHOLDER/${target_compound}/*_aux.pt" > /dev/null; then
+        COMPLETED_COUNT=$((COMPLETED_COUNT + 1))
+    fi
+done < <(sort -u "$BATCH_TARGETS_FILE")
+
+JOB_STATUS="failed"
+if [ "$EXPECTED_COUNT" -gt 0 ] && [ "$COMPLETED_COUNT" -eq "$EXPECTED_COUNT" ]; then
+    JOB_STATUS="success"
+fi
+
+source "LEDGER_HELPER_PLACEHOLDER"
+append_job_result "LEDGER_FILE_PLACEHOLDER" "${SLURM_JOB_ID:-unknown}" "PROTEIN_PLACEHOLDER" "batch_BATCH_ID_PLACEHOLDER" "$JOB_STATUS" "$COMPLETED_COUNT" "$EXPECTED_COUNT"
+echo "Batch ledger status: ${JOB_STATUS} (${COMPLETED_COUNT}/${EXPECTED_COUNT})"
+
+touch TOKEN_FILE_PLACEHOLDER
+rm -rf $LOCAL_OUT
+echo "Job completed at: $(date)"
+EOFSCRIPT
+
+    # Replace placeholders
+    sed -i "s|PROTEIN_PLACEHOLDER|${protein}|g" "$JOB_SCRIPT"
+    sed -i "s|BATCH_ID_PLACEHOLDER|${batch_id}|g" "$JOB_SCRIPT"
+    sed -i "s|TIME_LIMIT_PLACEHOLDER|${LIGAND_TIME_LIMIT}|g" "$JOB_SCRIPT"
+    sed -i "s|MEMORY_PLACEHOLDER|${LIGAND_MEMORY}|g" "$JOB_SCRIPT"
+    sed -i "s|CPUS_PLACEHOLDER|${LIGAND_CPUS}|g" "$JOB_SCRIPT"
+    sed -i "s|PARTITION_PLACEHOLDER|${LIGAND_PARTITION}|g" "$JOB_SCRIPT"
+    sed -i "s|LOG_DIR_PLACEHOLDER|${LOG_DIR}|g" "$JOB_SCRIPT"
+    sed -i "s|RFAA_CONDA_ENV_PLACEHOLDER|${RFAA_CONDA_ENV}|g" "$JOB_SCRIPT"
+    sed -i "s|RFAA_ROOT_PLACEHOLDER|${RFAA_ROOT}|g" "$JOB_SCRIPT"
+    sed -i "s|SELECTED_CSV_PLACEHOLDER|${SELECTED_CSV}|g" "$JOB_SCRIPT"
+    sed -i "s|N_BATCHES_PLACEHOLDER|${N_BATCHES}|g" "$JOB_SCRIPT"
+    sed -i "s|N_LIGANDS_PLACEHOLDER|${N_LIGANDS}|g" "$JOB_SCRIPT"
+    sed -i "s|N_CHAINS_PLACEHOLDER|${N_CHAINS}|g" "$JOB_SCRIPT"
+    sed -i "s|INPUT_DIR_PLACEHOLDER|${INPUT_DIR}|g" "$JOB_SCRIPT"
+    sed -i "s|TEMPLATE_PDB_PLACEHOLDER|${TEMPLATE_PDB}|g" "$JOB_SCRIPT"
+    sed -i "s|OUTPUT_DIR_PLACEHOLDER|${OUTPUT_DIR}|g" "$JOB_SCRIPT"
+    sed -i "s|TOKEN_FILE_PLACEHOLDER|${TOKEN_FILE}|g" "$JOB_SCRIPT"
+    sed -i "s|LEDGER_FILE_PLACEHOLDER|${LEDGER_FILE}|g" "$JOB_SCRIPT"
+    sed -i "s|LEDGER_HELPER_PLACEHOLDER|${LEDGER_HELPER}|g" "$JOB_SCRIPT"
+
+    JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
+    if [ -n "$JOB_ID" ]; then
+        log_info "Submitted RFAA template batch ${batch_id} for ${protein} (Job ID: ${JOB_ID})"
+        echo "$JOB_ID" >> "${LIGAND_DIR}/job_ids.txt"
+        return 0
+    else
+        log_error "Failed to submit RFAA template batch ${batch_id} for ${protein}"
+        return 1
+    fi
+}
+
+# ============================================================================
 # Main Script
 # ============================================================================
 
@@ -385,12 +644,15 @@ for PROTEIN in $PROTEINS; do
     log_info "Processing protein: ${PROTEIN}"
     log_info "=========================================="
 
-    # Check if protein folding is completed (prerequisite)
-    FOLD_TOKEN="${TASK_ROOT}/${PROTEIN}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done"
-    if [ ! -f "$FOLD_TOKEN" ]; then
-        log_error "Protein folding not completed for ${PROTEIN}: ${FOLD_TOKEN}"
-        log_error "Please run run_rosettafold_prefold.sh first"
-        continue
+    # Check if protein folding is completed (prerequisite).
+    # Template mode is single-stage, so this prefold token is not required.
+    if [ "$TEMPLATE_MODE" -ne 1 ]; then
+        FOLD_TOKEN="${TASK_ROOT}/${PROTEIN}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done"
+        if [ ! -f "$FOLD_TOKEN" ]; then
+            log_error "Protein folding not completed for ${PROTEIN}: ${FOLD_TOKEN}"
+            log_error "Please run run_rosettafold_prefold.sh first"
+            continue
+        fi
     fi
 
     # Validate protein directory structure
@@ -411,8 +673,15 @@ for PROTEIN in $PROTEINS; do
         continue
     fi
 
-    BATCH_SIZE=$(( (N_COMPOUNDS + N_BATCHES - 1) / N_BATCHES ))
-    log_info "Batch size: ${BATCH_SIZE} compounds per batch"
+    # In template mode, N_LIGANDS compounds are co-folded per prediction, so the
+    # unit of work is a "chunk", not a single compound.
+    if [ "$TEMPLATE_MODE" -eq 1 ]; then
+        N_UNITS=$(( (N_COMPOUNDS + N_LIGANDS - 1) / N_LIGANDS ))
+    else
+        N_UNITS=$N_COMPOUNDS
+    fi
+    BATCH_SIZE=$(( (N_UNITS + N_BATCHES - 1) / N_BATCHES ))
+    log_info "Batch size: ${BATCH_SIZE} units per batch (template_mode=${TEMPLATE_MODE})"
 
     RFAA_DIR="${TASK_ROOT}/${PROTEIN}/fine_screening/RoseTTAFold"
     mkdir -p "${RFAA_DIR}/protein_ligand"
@@ -423,11 +692,15 @@ for PROTEIN in $PROTEINS; do
     SUBMITTED=0
     for batch_id in $(seq 0 $((N_BATCHES - 1))); do
         START_IDX=$((batch_id * BATCH_SIZE))
-        if [ $START_IDX -ge $N_COMPOUNDS ]; then
+        if [ $START_IDX -ge $N_UNITS ]; then
             break
         fi
 
-        if submit_protein_ligand_batch "$PROTEIN" "$batch_id"; then
+        if [ "$TEMPLATE_MODE" -eq 1 ]; then
+            if submit_template_batch "$PROTEIN" "$batch_id"; then
+                SUBMITTED=$((SUBMITTED + 1))
+            fi
+        elif submit_protein_ligand_batch "$PROTEIN" "$batch_id"; then
             SUBMITTED=$((SUBMITTED + 1))
         fi
     done

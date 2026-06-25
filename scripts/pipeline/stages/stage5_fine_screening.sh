@@ -31,6 +31,10 @@ SKIP_VINA=0
 SKIP_DIFFDOCK=0
 SKIP_MD_PBSA=0
 
+# Template mode (single-stage, no prefold) and multi-ligand
+TEMPLATE_MODE=0
+N_LIGANDS=1
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -44,6 +48,8 @@ while [[ $# -gt 0 ]]; do
         --skip-vina) SKIP_VINA=1; shift ;;
         --skip-diffdock) SKIP_DIFFDOCK=1; shift ;;
         --skip-md-pbsa) SKIP_MD_PBSA=1; shift ;;
+        --template-mode) TEMPLATE_MODE=1; shift ;;
+        --n-ligands) N_LIGANDS="$2"; shift 2 ;;
         --state-file) STATE_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -64,6 +70,9 @@ main() {
 
     # Export environment variables
     export_pipeline_env "$TASK_ROOT" "$PROTEINS"
+    # Make template settings visible to the batch scripts (RoseTTAFold reads these).
+    export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+    export MASTER_N_LIGANDS="$N_LIGANDS"
 
     # 5a — Submit AF3, Boltz2, Vina, RoseTTAFold
     log_info "Stage 5a: Submitting AF3, Boltz2, Vina, RoseTTAFold jobs"

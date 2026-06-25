@@ -28,6 +28,10 @@ SKIP_AF3=0
 SKIP_BOLTZ2=0
 SKIP_ROSETTAFOLD=0
 
+# Template mode (single-stage, no prefold) and multi-ligand
+TEMPLATE_MODE=0
+N_LIGANDS=1
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -38,6 +42,8 @@ while [[ $# -gt 0 ]]; do
         --skip-af3) SKIP_AF3=1; shift ;;
         --skip-boltz2) SKIP_BOLTZ2=1; shift ;;
         --skip-rosettafold) SKIP_ROSETTAFOLD=1; shift ;;
+        --template-mode) TEMPLATE_MODE=1; shift ;;
+        --n-ligands) N_LIGANDS="$2"; shift 2 ;;
         --state-file) STATE_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -58,6 +64,29 @@ main() {
 
     # Export environment variables
     export_pipeline_env "$TASK_ROOT" "$PROTEINS"
+    # Make template settings visible to the input writers / batch scripts.
+    export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+    export MASTER_N_LIGANDS="$N_LIGANDS"
+
+    # Template mode: single stage, no prefold/MSA. Write template inputs directly
+    # from sequences.csv, then prepare the docking CSV splits as usual.
+    if [ "$TEMPLATE_MODE" -eq 1 ]; then
+        log_info "Stage 4 (template mode): writing template-based fine screening inputs"
+        [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_af3_template_input.sh"
+        [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_boltz2_template_input.sh"
+        # RoseTTAFold template inputs are generated inside run_rosettafold_batch.sh (stage 5).
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log_info "[DRY RUN] Would write template inputs and split docking CSV"
+            return 0
+        fi
+
+        bash "${SCRIPT_DIR}/../../input/run_split_csv.sh"
+
+        [ -n "$STATE_FILE" ] && update_stage_status "4" "completed" 0
+        log_stage_complete "Stage 4: Prepare Fine Screening (template mode)"
+        return 0
+    fi
 
     # 4a — Write prefold inputs
     log_info "Stage 4a: Writing prefold inputs"
