@@ -219,11 +219,14 @@ get_downstream_job_files() {
 
 run_step_1() {
     run_cmd bash "${SCRIPT_DIR}/../input/run_write_prefold_af3.sh"
-    run_cmd bash "${SCRIPT_DIR}/../input/run_write_prefold_boltz2.sh"
-
     run_cmd bash "${SCRIPT_DIR}/../structure_prediction/prefold/run_prefold_af3.sh"
-    run_cmd bash "${SCRIPT_DIR}/../structure_prediction/prefold/run_prefold_boltz2.sh"
-    run_cmd bash "${SCRIPT_DIR}/../structure_prediction/prefold/run_rosettafold_prefold.sh"
+
+    # Only run Boltz2/RoseTTAFold prefold when downstream steps will be used
+    if [ "$STOP_AFTER" -gt 3 ]; then
+        run_cmd bash "${SCRIPT_DIR}/../input/run_write_prefold_boltz2.sh"
+        run_cmd bash "${SCRIPT_DIR}/../structure_prediction/prefold/run_prefold_boltz2.sh"
+        run_cmd bash "${SCRIPT_DIR}/../structure_prediction/prefold/run_rosettafold_prefold.sh"
+    fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
         return 0
@@ -240,12 +243,14 @@ run_step_1() {
     local protein
     for protein in $PROTEINS; do
         local af3_token="${TASK_ROOT}/${protein}/fine_screening/AF3/prefold/prefold.done"
-        local boltz_conf="${TASK_ROOT}/${protein}/fine_screening/Boltz2/prefold/boltz_results_${protein}/predictions/${protein}/confidence_${protein}_model_0.json"
-        local rf_token="${TASK_ROOT}/${protein}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done"
-
         [ -f "$af3_token" ] || { log_error "Missing AF3 prefold token: ${af3_token}"; return 1; }
-        [ -f "$boltz_conf" ] || { log_error "Missing Boltz2 prefold output: ${boltz_conf}"; return 1; }
-        [ -f "$rf_token" ] || { log_error "Missing RoseTTAFold prefold token: ${rf_token}"; return 1; }
+
+        if [ "$STOP_AFTER" -gt 3 ]; then
+            local boltz_conf="${TASK_ROOT}/${protein}/fine_screening/Boltz2/prefold/boltz_results_${protein}/predictions/${protein}/confidence_${protein}_model_0.json"
+            local rf_token="${TASK_ROOT}/${protein}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done"
+            [ -f "$boltz_conf" ] || { log_error "Missing Boltz2 prefold output: ${boltz_conf}"; return 1; }
+            [ -f "$rf_token" ] || { log_error "Missing RoseTTAFold prefold token: ${rf_token}"; return 1; }
+        fi
     done
 }
 
