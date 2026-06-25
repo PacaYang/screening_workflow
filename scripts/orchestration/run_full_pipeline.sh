@@ -41,6 +41,11 @@ SKIP_VINA=0
 SKIP_DIFFDOCK=0
 SKIP_MD_PBSA=0
 
+# Template mode — single-stage folding (no prefold/MSA), template-based,
+# multi-chain / multi-ligand. Off by default (uses the two-stage prefold flow).
+TEMPLATE_MODE=0
+N_LIGANDS=1
+
 # ============================================================================
 # Logging
 # ============================================================================
@@ -203,13 +208,19 @@ preflight_check_scripts() {
     fi
 
     if [ "$START_FROM" -le 4 ] && [ "$STOP_AFTER" -ge 4 ]; then
-        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_prefold_af3.sh")
-        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_prefold_boltz2.sh")
-        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_prefold_af3.sh")
-        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_prefold_boltz2.sh")
-        [ "$SKIP_ROSETTAFOLD" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_rosettafold_prefold.sh")
-        [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_af3_input.sh")
-        [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_boltz2_input.sh")
+        if [ "$TEMPLATE_MODE" -eq 1 ]; then
+            # Single-stage template flow: no prefold scripts required.
+            [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_af3_template_input.sh")
+            [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_boltz2_template_input.sh")
+        else
+            [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_prefold_af3.sh")
+            [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_prefold_boltz2.sh")
+            [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_prefold_af3.sh")
+            [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_prefold_boltz2.sh")
+            [ "$SKIP_ROSETTAFOLD" -eq 0 ] && required+=("$SCRIPTS_ROOT/structure_prediction/run_rosettafold_prefold.sh")
+            [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_af3_input.sh")
+            [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/prepare_input/run_write_boltz2_input.sh")
+        fi
         if [ "$SKIP_VINA" -eq 1 ] && [ "$SKIP_DIFFDOCK" -eq 0 ]; then
             required+=("$SCRIPTS_ROOT/prepare_input/run_split_csv.sh")
         fi
@@ -353,61 +364,70 @@ stage_compile_summary() {
 # ============================================================================
 
 stage_prepare_fine() {
-    # 4a — Write prefold inputs
-    log_info "Stage 4a: Writing prefold inputs"
-    [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_prefold_boltz2.sh"
+    if [ "$TEMPLATE_MODE" -eq 1 ]; then
+        # Template mode: single stage, no prefold/MSA. Write template inputs directly.
+        log_info "Stage 4 (template mode): writing template-based fine screening inputs"
+        [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_af3_template_input.sh"
+        [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_boltz2_template_input.sh"
+        # RoseTTAFold template inputs are generated inside run_rosettafold_batch.sh (stage 5).
+    else
+        # 4a — Write prefold inputs
+        log_info "Stage 4a: Writing prefold inputs"
+        [ "$SKIP_AF3" -eq 0 ]    && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_prefold_af3.sh"
+        [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/prepare_input/run_write_prefold_boltz2.sh"
 
-    # 4b — Submit prefold SLURM jobs
-    log_info "Stage 4b: Submitting prefold jobs"
-    [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_prefold_boltz2.sh"
-    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_rosettafold_prefold.sh"
+        # 4b — Submit prefold SLURM jobs
+        log_info "Stage 4b: Submitting prefold jobs"
+        [ "$SKIP_AF3" -eq 0 ]         && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_prefold_af3.sh"
+        [ "$SKIP_BOLTZ2" -eq 0 ]      && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_prefold_boltz2.sh"
+        [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry bash "$SCRIPTS_ROOT/structure_prediction/run_rosettafold_prefold.sh"
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY-RUN] Would poll SLURM until all prefold jobs finish"
-        echo "  [DRY-RUN] Would then write fine screening inputs"
-        return 0
+        if [ "$DRY_RUN" -eq 0 ]; then
+            # 4c — Wait for prefold jobs
+            log_info "Stage 4c: Waiting for prefold jobs"
+            local tmp_jobs
+            tmp_jobs=$(mktemp)
+
+            if [ "$SKIP_AF3" -eq 0 ]; then
+                local jf
+                jf=$(collect_all_job_files "fine_screening/AF3/prefold")
+                [ -s "$jf" ] && cat "$jf" >> "$tmp_jobs"
+                rm -f "$jf"
+            fi
+            if [ "$SKIP_BOLTZ2" -eq 0 ]; then
+                local jf
+                jf=$(collect_all_job_files "fine_screening/Boltz2/prefold")
+                [ -s "$jf" ] && cat "$jf" >> "$tmp_jobs"
+                rm -f "$jf"
+            fi
+            if [ "$SKIP_ROSETTAFOLD" -eq 0 ]; then
+                local jf
+                jf=$(collect_all_job_files "fine_screening/RoseTTAFold")
+                [ -s "$jf" ] && cat "$jf" >> "$tmp_jobs"
+                rm -f "$jf"
+            fi
+
+            wait_for_slurm_jobs "$tmp_jobs" "prefold"
+            rm -f "$tmp_jobs"
+
+            # 4d — Write fine screening inputs
+            log_info "Stage 4d: Writing fine screening inputs"
+            [ "$SKIP_AF3" -eq 0 ]    && bash "$SCRIPTS_ROOT/prepare_input/run_write_af3_input.sh"
+            [ "$SKIP_BOLTZ2" -eq 0 ] && bash "$SCRIPTS_ROOT/prepare_input/run_write_boltz2_input.sh"
+        else
+            echo "  [DRY-RUN] Would poll SLURM until all prefold jobs finish"
+            echo "  [DRY-RUN] Would then write fine screening inputs"
+        fi
     fi
-
-    # 4c — Wait for prefold jobs
-    log_info "Stage 4c: Waiting for prefold jobs"
-    local tmp_jobs
-    tmp_jobs=$(mktemp)
-
-    if [ "$SKIP_AF3" -eq 0 ]; then
-        local jf
-        jf=$(collect_all_job_files "fine_screening/AF3/prefold")
-        [ -s "$jf" ] && cat "$jf" >> "$tmp_jobs"
-        rm -f "$jf"
-    fi
-    if [ "$SKIP_BOLTZ2" -eq 0 ]; then
-        local jf
-        jf=$(collect_all_job_files "fine_screening/Boltz2/prefold")
-        [ -s "$jf" ] && cat "$jf" >> "$tmp_jobs"
-        rm -f "$jf"
-    fi
-    if [ "$SKIP_ROSETTAFOLD" -eq 0 ]; then
-        local jf
-        jf=$(collect_all_job_files "fine_screening/RoseTTAFold")
-        [ -s "$jf" ] && cat "$jf" >> "$tmp_jobs"
-        rm -f "$jf"
-    fi
-
-    wait_for_slurm_jobs "$tmp_jobs" "prefold"
-    rm -f "$tmp_jobs"
-
-    # 4d — Write fine screening inputs
-    log_info "Stage 4d: Writing fine screening inputs"
-    [ "$SKIP_AF3" -eq 0 ]    && bash "$SCRIPTS_ROOT/prepare_input/run_write_af3_input.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && bash "$SCRIPTS_ROOT/prepare_input/run_write_boltz2_input.sh"
 
     # Vina now prepares receptor first, then generates split inputs internally.
     # Keep explicit split step only for DiffDock-only runs (when Vina is skipped).
-    if [ "$SKIP_VINA" -eq 0 ]; then
-        echo "  Vina input chunking is handled in run_vina_batch.sh after receptor preparation"
-    elif [ "$SKIP_DIFFDOCK" -eq 0 ]; then
-        bash "$SCRIPTS_ROOT/prepare_input/run_split_csv.sh"
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if [ "$SKIP_VINA" -eq 0 ]; then
+            echo "  Vina input chunking is handled in run_vina_batch.sh after receptor preparation"
+        elif [ "$SKIP_DIFFDOCK" -eq 0 ]; then
+            bash "$SCRIPTS_ROOT/prepare_input/run_split_csv.sh"
+        fi
     fi
 }
 
@@ -625,15 +645,19 @@ show_status() {
         # Stage 4
         echo ""
         echo "  Stage 4 — Prepare Fine Screening:"
-        [ -f "${base}/fine_screening/AF3/prefold/prefold.done" ] \
-            && echo -e "    AF3 prefold: ${GREEN}done${NC}" \
-            || echo -e "    AF3 prefold: ${YELLOW}pending${NC}"
-        local boltz_conf
-        boltz_conf=$(find "${base}/fine_screening/Boltz2/prefold" -name "confidence_*.json" 2>/dev/null | wc -l)
-        echo "    Boltz2 prefold: ${boltz_conf} confidence JSON(s)"
-        [ -f "${base}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done" ] \
-            && echo -e "    RoseTTAFold prefold: ${GREEN}done${NC}" \
-            || echo -e "    RoseTTAFold prefold: ${YELLOW}pending${NC}"
+        if [ "$TEMPLATE_MODE" -eq 1 ]; then
+            echo "    (template mode — prefold skipped)"
+        else
+            [ -f "${base}/fine_screening/AF3/prefold/prefold.done" ] \
+                && echo -e "    AF3 prefold: ${GREEN}done${NC}" \
+                || echo -e "    AF3 prefold: ${YELLOW}pending${NC}"
+            local boltz_conf
+            boltz_conf=$(find "${base}/fine_screening/Boltz2/prefold" -name "confidence_*.json" 2>/dev/null | wc -l)
+            echo "    Boltz2 prefold: ${boltz_conf} confidence JSON(s)"
+            [ -f "${base}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done" ] \
+                && echo -e "    RoseTTAFold prefold: ${GREEN}done${NC}" \
+                || echo -e "    RoseTTAFold prefold: ${YELLOW}pending${NC}"
+        fi
         [ -f "${base}/fine_screening/AF3/af3_input.done" ] \
             && echo -e "    AF3 inputs: ${GREEN}written${NC}" \
             || echo -e "    AF3 inputs: ${YELLOW}not written${NC}"
@@ -735,6 +759,10 @@ Options:
   --skip-vina              Skip Vina
   --skip-diffdock          Skip DiffDock
   --skip-md-pbsa           Skip MD+PBSA
+  --template-mode          Single-stage folding: skip prefold/MSA, use template
+                           (Input/protein_file/<P>/<P>.cif for Boltz2,
+                           <P>_<CHAIN>.cif for AF3), multi-chain & multi-ligand
+  --n-ligands N            Compounds to co-fold per prediction (default 1, id Z)
   --dry-run                Show what would run without executing
 
 Stages:
@@ -836,6 +864,14 @@ while [[ $# -gt 0 ]]; do
             SKIP_MD_PBSA=1
             shift
             ;;
+        --template-mode)
+            TEMPLATE_MODE=1
+            shift
+            ;;
+        --n-ligands)
+            N_LIGANDS="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -879,6 +915,8 @@ mkdir -p "$TASK_ROOT"
 # Export config for sub-scripts
 export MASTER_TASK_ROOT="$TASK_ROOT"
 export MASTER_PROTEINS="$PROTEINS"
+export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+export MASTER_N_LIGANDS="$N_LIGANDS"
 
 # Banner
 echo "=========================================="
