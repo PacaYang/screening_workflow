@@ -53,6 +53,7 @@ submit_job() {
     local OUTPUT_DIR="${INIT_DIR}/DrugLAMP"
     local OUTPUT_CSV="${OUTPUT_DIR}/prediction_${idx}.csv"
     local FAILED_CSV="${OUTPUT_DIR}/failed_smiles_${idx}.csv"
+    local SHARED_CACHE="${OUTPUT_DIR}/embeddings"
 
     if [ -f "$OUTPUT_CSV" ]; then
         log_info "prediction_${idx}.csv already exists for ${protein}, skipping"
@@ -60,6 +61,7 @@ submit_job() {
     fi
 
     mkdir -p "$OUTPUT_DIR"
+    mkdir -p "$SHARED_CACHE"
 
     local JOB_SCRIPT="${OUTPUT_DIR}/slurm_${idx}.sh"
 
@@ -83,6 +85,7 @@ conda activate ${CONDA_ENV}
 export MKL_THREADING_LAYER=GNU
 
 mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${SHARED_CACHE}"
 
 python "${EXE}" \\
     --input "${INPUT_CSV}" \\
@@ -92,7 +95,8 @@ python "${EXE}" \\
     --model DrugLAMP \\
     --n-layer 30 \\
     --device cuda \\
-    --batch-size 16
+    --batch-size 16 \\
+    --shared-cache-dir "${SHARED_CACHE}"
 
 echo "Job completed at: \$(date)"
 EOF

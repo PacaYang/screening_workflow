@@ -228,6 +228,7 @@ preflight_check_scripts() {
         [ "$SKIP_AF3" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/af3_scores.py")
         [ "$SKIP_BOLTZ2" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/boltz2_scores.py")
         [ "$SKIP_VINA" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/vina_scores.py")
+        [ "$SKIP_ROSETTAFOLD" -eq 0 ] && required+=("$SCRIPTS_ROOT/scoring/rosettafold_scores.py")
         if [ "$SKIP_MD_PBSA" -eq 0 ]; then
             required+=("$SCRIPTS_ROOT/md_pbsa/pbsa/pbsa_extract_results.sh")
             required+=("$SCRIPTS_ROOT/md_pbsa/pbsa/mapping_smiles.py")
@@ -451,7 +452,7 @@ stage_fine_screening() {
     [ "$SKIP_AF3" -eq 0 ]         && job_paths="$job_paths fine_screening/AF3/output"
     [ "$SKIP_BOLTZ2" -eq 0 ]      && job_paths="$job_paths fine_screening/Boltz2/output"
     [ "$SKIP_VINA" -eq 0 ]        && job_paths="$job_paths fine_screening/Vina/output"
-    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && job_paths="$job_paths fine_screening/RoseTTAFold/protein_ligand"
+    [ "$SKIP_ROSETTAFOLD" -eq 0 ] && job_paths="$job_paths fine_screening/RoseTTAFold"
     [ "$SKIP_MD_PBSA" -eq 0 ]     && job_paths="$job_paths fine_screening/PBSA/PBSA"
 
     for jp in $job_paths; do
@@ -523,6 +524,24 @@ stage_collect_results() {
                     --vina-results-folder "${base}/fine_screening/Vina/output" \
                     --output-dir "${base}/fine_screening/Vina" \
                     --input-dir "${base}/fine_screening/Vina/input"
+            fi
+        fi
+
+        # RoseTTAFold scores
+        if [ "$SKIP_ROSETTAFOLD" -eq 0 ]; then
+            local rfaa_summary="${base}/fine_screening/RoseTTAFold/summary.csv"
+            if [ -f "$rfaa_summary" ]; then
+                echo "  ${protein}/RoseTTAFold: summary.csv already exists, skipping"
+            else
+                echo "  ${protein}/RoseTTAFold: collecting scores"
+                local rfaa_out="${base}/fine_screening/RoseTTAFold/protein_ligand/output"
+                for f in "${rfaa_out}"/batch_*.tar.gz; do
+                    [ -f "$f" ] && tar -xzf "$f" -C "${rfaa_out}/"
+                done
+                python "$SCRIPTS_ROOT/scoring/rosettafold_scores.py" \
+                    --rfaa-results-folder "$rfaa_out" \
+                    --protein-name "$protein" \
+                    --output-dir "${base}/fine_screening/RoseTTAFold"
             fi
         fi
 
@@ -612,7 +631,7 @@ show_status() {
         local boltz_conf
         boltz_conf=$(find "${base}/fine_screening/Boltz2/prefold" -name "confidence_*.json" 2>/dev/null | wc -l)
         echo "    Boltz2 prefold: ${boltz_conf} confidence JSON(s)"
-        [ -f "${base}/fine_screening/RoseTTAFold/protein_fold.done" ] \
+        [ -f "${base}/fine_screening/RoseTTAFold/protein_folding/output/protein_fold.done" ] \
             && echo -e "    RoseTTAFold prefold: ${GREEN}done${NC}" \
             || echo -e "    RoseTTAFold prefold: ${YELLOW}pending${NC}"
         [ -f "${base}/fine_screening/AF3/af3_input.done" ] \
@@ -624,6 +643,9 @@ show_status() {
         local vina_chunks
         vina_chunks=$(find "${base}/fine_screening/Vina/input" -name "*.csv" 2>/dev/null | wc -l)
         echo "    Vina/DiffDock input chunks: ${vina_chunks}"
+        [ -f "${base}/fine_screening/Vina/receptor/${protein}.pdbqt" ] \
+            && echo -e "    Vina receptor: ${GREEN}ready${NC}" \
+            || echo -e "    Vina receptor: ${YELLOW}missing${NC}"
 
         # Stage 5
         echo ""
@@ -669,6 +691,9 @@ show_status() {
         [ -f "${base}/fine_screening/Vina/results.csv" ] \
             && echo -e "    Vina: ${GREEN}results.csv exists${NC}" \
             || echo -e "    Vina: ${YELLOW}not collected${NC}"
+        [ -f "${base}/fine_screening/RoseTTAFold/summary.csv" ] \
+            && echo -e "    RoseTTAFold: ${GREEN}summary.csv exists${NC}" \
+            || echo -e "    RoseTTAFold: ${YELLOW}not collected${NC}"
         [ -f "${base}/fine_screening/PBSA/summary.csv" ] \
             && echo -e "    PBSA: ${GREEN}summary.csv exists${NC}" \
             || echo -e "    PBSA: ${YELLOW}not collected${NC}"

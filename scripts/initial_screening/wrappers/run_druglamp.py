@@ -66,11 +66,18 @@ def convert_druglamp_output(druglamp_csv, original_csv, output_csv):
     return len(output_df)
 
 
-def run_druglamp_inference(input_csv, output_csv, checkpoint, model, n_layer, device, batch_size, inference_script):
+def run_druglamp_inference(input_csv, output_csv, checkpoint, model, n_layer, device, batch_size, inference_script, shared_cache_dir=None):
     """Run DrugLAMP inference."""
-    # Create a simple temporary directory for inference
-    # The fixed inference.py now properly handles paths internally
-    temp_dir = tempfile.mkdtemp(prefix='druglamp_inference_')
+    # Use shared cache directory if provided, otherwise create temporary directory
+    # Shared cache enables protein embedding reuse across jobs
+    if shared_cache_dir:
+        temp_dir = shared_cache_dir
+        cleanup_temp = False
+        print(f"Using shared embedding cache: {temp_dir}")
+    else:
+        temp_dir = tempfile.mkdtemp(prefix='druglamp_inference_')
+        cleanup_temp = True
+        print(f"Using temporary directory: {temp_dir}")
 
     cmd = [
         'python', inference_script,
@@ -87,7 +94,6 @@ def run_druglamp_inference(input_csv, output_csv, checkpoint, model, n_layer, de
     print(f"Running DrugLAMP inference: {' '.join(cmd)}")
     print(f"Working directory: {os.path.dirname(inference_script)}")
     print(f"Checkpoint file exists: {os.path.exists(checkpoint)}")
-    print(f"Temp directory: {temp_dir}")
 
     try:
         # Don't capture output - let it stream to console for better debugging
@@ -98,8 +104,8 @@ def run_druglamp_inference(input_csv, output_csv, checkpoint, model, n_layer, de
         print(f"Command: {' '.join(cmd)}", file=sys.stderr)
         return False
     finally:
-        # Clean up temporary directory
-        if os.path.exists(temp_dir):
+        # Clean up temporary directory only if not using shared cache
+        if cleanup_temp and os.path.exists(temp_dir):
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -128,6 +134,8 @@ def main():
     parser.add_argument('--n-layer', type=int, default=30, help='ESM2 model size')
     parser.add_argument('--device', default='cuda', help='Device (cuda/cpu)')
     parser.add_argument('--batch-size', type=int, default=16, help='Batch size')
+    parser.add_argument('--shared-cache-dir', default=None,
+                        help='Shared directory for embedding cache (enables protein embedding reuse across jobs)')
 
     args = parser.parse_args()
 
@@ -154,7 +162,8 @@ def main():
         success = run_druglamp_inference(
             tmp_input_path, tmp_output_path,
             args.checkpoint, args.model, args.n_layer,
-            args.device, args.batch_size, args.inference_script
+            args.device, args.batch_size, args.inference_script,
+            shared_cache_dir=args.shared_cache_dir
         )
 
         if not success:

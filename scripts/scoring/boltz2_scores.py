@@ -4,8 +4,12 @@ import pandas as pd
 import numpy as np
 from glob import glob
 from pathlib import Path
-from tqdm import tqdm 
+from tqdm import tqdm
 import argparse
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from binding_site_utils import compute_binding_site_cif
 
 def get_affinity(affinity_file):
     with open(affinity_file, 'r') as f:
@@ -45,22 +49,35 @@ def find_file(root_folder, pattern):
         return str(path)  # Return first match
     return None
 
-def gen_scores_df(path):
+def gen_scores_df(path, include_binding_sites=False, cutoff_ang=10.0):
     # loop over path
-    columns=['folder', 'chain_iptm', 'pair_pde', 'chain_ptm', 'iptm', 'ptm', 'ranking_score', 'iplddt', 'affinity', 'probability']
+    columns = ['folder', 'chain_iptm', 'pair_pde', 'chain_ptm', 'iptm', 'ptm', 'ranking_score', 'iplddt', 'affinity', 'probability']
+    if include_binding_sites:
+        columns.append('binding_residues')
+
+    df = None
     for folder in tqdm(os.listdir(path)):
-        affinity_file = find_file(os.path.join(path, folder), 'affinity_*.json')
-        summary_file = find_file(os.path.join(path, folder), 'confidence*.json')
+        folder_path = os.path.join(path, folder)
+        affinity_file = find_file(folder_path, 'affinity_*.json')
+        summary_file = find_file(folder_path, 'confidence*.json')
         if affinity_file and summary_file:
             scores = read_summary_confidences(summary_file, affinity_file)
             scores.insert(0, folder)
-            if 'df' not in locals():
+            if include_binding_sites:
+                cif_file = find_file(folder_path, '*model*.cif')
+                binding_residues = compute_binding_site_cif(
+                    cif_file, ligand_chain='Z', cutoff_ang=cutoff_ang
+                ) if cif_file else ''
+                scores.append(binding_residues)
+            if df is None:
                 df = pd.DataFrame(data=[scores], columns=columns)
             else:
-                df = pd.concat([df, pd.DataFrame([scores], columns=df.columns)], ignore_index=True)
+                df = pd.concat([df, pd.DataFrame([scores], columns=columns)], ignore_index=True)
         else:
             print(f"📁 Depth 1: {folder} is a file")
 
+    if df is None:
+        df = pd.DataFrame(columns=columns)
     return df
 
 def map_smiles(df0, smiles_file, smiles_col):
@@ -79,10 +96,16 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=str, help="Path to save the summary")
     parser.add_argument("--smiles", type=str, help="Path to smiles file. Used to mapping the results")
     parser.add_argument("--smiles-col", default="SMILES", type=str, help="Col name for the smiles")
+    parser.add_argument("--binding-sites", action="store_true", default=False,
+                        help="Compute binding site residues from structure files (optional)")
+    parser.add_argument("--distance-threshold", type=float, default=10.0,
+                        help="Distance cutoff in Angstroms for binding site detection (default 10.0 = 1 nm)")
 
     args = parser.parse_args()
 
-    df_0 = gen_scores_df(args.boltz_results_folder)
+    df_0 = gen_scores_df(args.boltz_results_folder,
+                         include_binding_sites=args.binding_sites,
+                         cutoff_ang=args.distance_threshold)
     df = map_smiles(df_0, args.smiles, args.smiles_col)
     output_name = os.path.join(args.output_dir, "summary.csv")
     df.to_csv(output_name, index=False)

@@ -92,6 +92,8 @@ def main():
     ap.add_argument("--druglamp-score", default="druglamp_score", help="DrugLAMP score column")
     ap.add_argument("--conplex-score", default="conplex_score", help="ConPLex score column")
     ap.add_argument("--hmsa-threshold", type=float, default=0.5, help="Keep all HMSA >= this")
+    ap.add_argument("--max-hmsa-fill", type=int, default=None, help="Cap HMSA seed slots (top by HMSA score)")
+    ap.add_argument("--max-druglamp-fill", type=int, default=None, help="Cap DrugLAMP fill slots (remaining go to GraphDTA/ColdDTA/ConPLex)")
     ap.add_argument("--target-n", type=int, default=10000, help="Total selected size")
     ap.add_argument("--summary", required=True, help="Path to write summary.csv")
     ap.add_argument("--selected", required=True, help="Path to write selected.csv; This file will be used to map the SMILES for Boltz2 output as well.")
@@ -148,8 +150,10 @@ def main():
     # Normalize id column name internally
     df = df.rename({args.id_col: "__id__"})
 
-    # 1) Seed with HMSA >= threshold
+    # 1) Seed with HMSA >= threshold, optionally capped
     h_keep = df.filter(df["hmsa_score"] >= args.hmsa_threshold)
+    if args.max_hmsa_fill is not None and len(h_keep) > args.max_hmsa_fill:
+        h_keep = h_keep.sort("hmsa_score", descending=True).head(args.max_hmsa_fill)
     h_keep_ids = set(h_keep["__id__"].to_list())
 
     # 2) If we already exceed target, cap by highest HMSA
@@ -169,45 +173,51 @@ def main():
         capped.rename({"__id__": args.id_col}).write_csv(args.selected)
         return
 
-    # 3) Fill remaining from all available methods (GraphDTA, ColdDTA, DrugLAMP, ConPLex)
+    # 3) Fill remaining: prioritize DrugLAMP first, then best of GraphDTA/ColdDTA/ConPLex
     remaining_n = args.target_n - len(h_keep_ids)
-
-    # Build list of available score columns
-    score_cols = ["graphdta_score", "colddta_score"]
-    if d is not None:
-        score_cols.append("druglamp_score")
-    if cp is not None:
-        score_cols.append("conplex_score")
-
-    # Select based on best score across all available methods
     mask_pool = ~df["__id__"].is_in(h_keep_ids)
-    candidates = df.filter(mask_pool).with_columns(
-        pl.max_horizontal(score_cols).alias("best_score")
-    ).sort("best_score", descending=True)
 
-    chosen_even = candidates.head(remaining_n)["__id__"].to_list()
-    chosen_ids = list(h_keep_ids) + chosen_even
+    chosen_druglamp = []
+    if d is not None:
+        druglamp_cap = min(remaining_n, args.max_druglamp_fill) if args.max_druglamp_fill is not None else remaining_n
+        druglamp_sorted = (df.filter(mask_pool & df["druglamp_score"].is_not_null())
+                           .sort("druglamp_score", descending=True))
+        chosen_druglamp = druglamp_sorted.head(druglamp_cap)["__id__"].to_list()
+
+    # Fill any remaining slots from GraphDTA/ColdDTA/ConPLex
+    fallback_cols = ["graphdta_score", "colddta_score"]
+    if cp is not None:
+        fallback_cols.append("conplex_score")
+
+    still_needed = remaining_n - len(chosen_druglamp)
+    chosen_fallback = []
+    if still_needed > 0:
+        mask_fallback = mask_pool & (~df["__id__"].is_in(chosen_druglamp))
+        fallback_candidates = (df.filter(mask_fallback)
+                               .with_columns(pl.max_horizontal(fallback_cols).alias("best_score"))
+                               .sort("best_score", descending=True))
+        chosen_fallback = fallback_candidates.head(still_needed)["__id__"].to_list()
+
+    chosen_ids = list(h_keep_ids) + chosen_druglamp + chosen_fallback
 
     # Build selected table with provenance
     sel = df.filter(df["__id__"].is_in(chosen_ids))
 
-    # Build method list for source label
-    method_names = ["GraphDTA", "ColdDTA"]
-    if d is not None:
-        method_names.append("DrugLAMP")
-    if cp is not None:
-        method_names.append("ConPLex")
-    fill_label = f"FILL({'/'.join(method_names)})"
+    druglamp_set = set(chosen_druglamp)
+    fallback_set = set(chosen_fallback)
+    fallback_label = f"FILL(GraphDTA/ColdDTA{'/ConPLex' if cp is not None else ''})"
 
     sel = sel.with_columns(
         pl.when(pl.col("__id__").is_in(list(h_keep_ids)))
           .then(pl.lit("HMSA>=thr"))
-          .otherwise(pl.lit(fill_label))
+          .when(pl.col("__id__").is_in(list(druglamp_set)))
+          .then(pl.lit("FILL(DrugLAMP)"))
+          .otherwise(pl.lit(fallback_label))
           .alias("source")
     )
 
-    # Order by (HMSA first, then best of others)
-    all_score_cols = score_cols + ["hmsa_score"]
+    # Order by (HMSA first, then DrugLAMP, then others)
+    all_score_cols = fallback_cols + (["druglamp_score"] if d is not None else []) + ["hmsa_score"]
     sel = sel.with_columns([
         (pl.col("source") == "HMSA>=thr").cast(pl.Int32).alias("_sort_h"),
         pl.max_horizontal(all_score_cols).alias("_sort_best")

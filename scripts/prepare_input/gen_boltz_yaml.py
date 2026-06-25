@@ -49,7 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--msa",
                     type=str,
                     help='destination of msa csv')
-    
+
     parser.add_argument("--sequence",
                     type=str,
                     help='protein sequence. If it is missing, protein file and protein name will be used to extract the sequence from the file.')
@@ -61,32 +61,73 @@ if __name__ == "__main__":
     parser.add_argument("--protein-file",
                     default=None,
                     type=str,
-                    help='destination of csv file containing the protein names and sequences.')   
+                    help='destination of csv file containing the protein names and sequences.')
 
-    parser.add_argument('--name-col', 
+    parser.add_argument('--name-col',
                     type=str, default='name', help="the name of column containing the name. Use with --protein-file.")
-    
-    parser.add_argument('--seq-col', 
+
+    parser.add_argument('--seq-col',
                     type=str, default='sequence', help="the name of column containing the sequence. Use with --protein-file.")
-    
-    parser.add_argument('--protein-name', 
+
+    parser.add_argument('--protein-name',
                     help='protein to write. Use with --protein-file.')
 
     parser.add_argument('--protein-only', action="store_true", default=False,
                     help='write inputs for protein only. Used to prefold the protein. Ligands will be ignored with this option.')
 
+    parser.add_argument('--prefold-yaml',
+                    type=str,
+                    help='prefold YAML file to use as template. Loads protein chains from this file and appends ligand.')
+
     args = parser.parse_args()
 
-    
+
     if args.protein_only:
         protein_df = pd.read_csv(args.protein_file)
         seq = protein_df.loc[protein_df[args.name_col]==args.protein_name, args.seq_col].iloc[0]
         output_path = os.path.join(args.output, f"{args.protein_name}.yaml")
         write_boltz_input(output_path, seq)
 
+    elif args.prefold_yaml:
+        # Load prefold YAML and append ligands
+        with open(args.prefold_yaml, 'r') as f:
+            prefold_data = yaml.safe_load(f)
+
+        smiles_df = pd.read_csv(args.smiles_path)
+
+        # Boltz expects `msa` to be a PATH to an a3m/csv MSA file, not an inline
+        # list of sequences. Inlining a list makes chain.msa_id a list, which
+        # crashes Boltz at `sorted({c.msa_id ...})` with "unhashable type: list".
+        msa_path = os.path.abspath(args.msa) if args.msa else None
+
+        for i, smi in tqdm(enumerate(smiles_df['SMILES'])):
+            output_path = os.path.join(args.output, f"{i}.yaml")
+            # Deep copy prefold structure
+            output_data = {
+                "version": prefold_data.get("version", 1),
+                "sequences": []
+            }
+
+            # Copy each protein sequence and point MSA at the prefold CSV path
+            for seq in prefold_data["sequences"]:
+                if "protein" in seq:
+                    new_seq = {"protein": seq["protein"].copy()}
+                    if msa_path:
+                        new_seq["protein"]["msa"] = msa_path
+                    output_data["sequences"].append(new_seq)
+                else:
+                    output_data["sequences"].append(seq)
+
+            # Append ligand
+            output_data["sequences"].append({"ligand": {"id": "Z", "smiles": smi}})
+            output_data["properties"] = [{"affinity": {"binder": "Z"}}]
+
+            with open(output_path, 'w') as f:
+                yaml.dump(output_data, f, default_flow_style=False)
+
     else:
         smiles_df = pd.read_csv(args.smiles_path)
-        
+
         for i, smi in tqdm(enumerate(smiles_df['SMILES'])):
             output_path = os.path.join(args.output, f"{i}.yaml")
             if args.sequence:

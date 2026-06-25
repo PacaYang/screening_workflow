@@ -164,14 +164,8 @@ try:
     if smiles is None:
         print("ERROR: No SMILES column found", file=sys.stderr)
         sys.exit(1)
-    # Try common column names for compound ID
-    compound_id = None
-    for col in ['compound_id', 'id', 'name', 'ID', 'Name']:
-        if col in df.columns:
-            compound_id = row[col]
-            break
-    if compound_id is None:
-        compound_id = f"compound_{idx}"
+    # Use index as compound ID to avoid long IUPAC names exceeding path limits
+    compound_id = f"compound_{idx}"
     print(f"{compound_id}|{smiles}")
 except Exception as e:
     print(f"ERROR: {e}", file=sys.stderr)
@@ -197,19 +191,21 @@ PYEOF
     mkdir -p "$COMPOUND_OUTPUT"
 
     # Copy pre-computed MSA files from Stage 1 to avoid regenerating them
-    PROTEIN_MSA_DIR="PROTEIN_FOLD_OUTPUT_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/A"
-    COMPOUND_MSA_DIR="${COMPOUND_OUTPUT}/PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}/A"
-    mkdir -p "$COMPOUND_MSA_DIR"
+    echo "  Copying pre-computed MSA files from Stage 1 for chains A, B, C"
+    for chain in A B C; do
+        PROTEIN_MSA_DIR="PROTEIN_FOLD_OUTPUT_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/${chain}"
+        COMPOUND_MSA_DIR="${COMPOUND_OUTPUT}/PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}/${chain}"
+        mkdir -p "$COMPOUND_MSA_DIR"
 
-    if [ -d "$PROTEIN_MSA_DIR" ]; then
-        echo "  Copying pre-computed MSA files from Stage 1"
-        cp "$PROTEIN_MSA_DIR"/t000_.msa0.a3m "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-        cp "$PROTEIN_MSA_DIR"/t000_.hhr "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-        cp "$PROTEIN_MSA_DIR"/t000_.atab "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-        cp "$PROTEIN_MSA_DIR"/t000_.ss2 "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-    else
-        echo "  Warning: Pre-computed MSA directory not found: $PROTEIN_MSA_DIR"
-    fi
+        if [ -d "$PROTEIN_MSA_DIR" ]; then
+            cp "$PROTEIN_MSA_DIR"/t000_.msa0.a3m "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+            cp "$PROTEIN_MSA_DIR"/t000_.hhr "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+            cp "$PROTEIN_MSA_DIR"/t000_.atab "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+            cp "$PROTEIN_MSA_DIR"/t000_.ss2 "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+        else
+            echo "  Warning: Pre-computed MSA directory not found for chain ${chain}: $PROTEIN_MSA_DIR"
+        fi
+    done
 
     cat > "$COMPOUND_CONFIG" <<EOF
 defaults:
@@ -218,12 +214,24 @@ defaults:
 job_name: "PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
 output_path: "${COMPOUND_OUTPUT}"
 
+loader_params:
+  n_templ: 4
+  MAXLAT: 32
+  MAXSEQ: 128
+  MAXCYCLE: 4
+  BLACK_HOLE_INIT: False
+  seqid: 150.0
+
 protein_inputs:
   A:
     fasta_file: "FASTA_FILE_PLACEHOLDER"
+  B:
+    fasta_file: "FASTA_FILE_PLACEHOLDER"
+  C:
+    fasta_file: "FASTA_FILE_PLACEHOLDER"
 
 sm_inputs:
-  B:
+  Z:
     input: "${SMILES}"
     input_type: "smiles"
 EOF

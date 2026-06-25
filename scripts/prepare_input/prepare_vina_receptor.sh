@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 # Prepare AutoDock Vina receptor PDBQT using obabel.
-# Requires ROOT/ENDROOT markers in the generated receptor file.
 #
 
 set -euo pipefail
@@ -32,34 +31,6 @@ Options:
   --force            Rebuild receptor even if output exists
   --help             Show help
 USAGE
-}
-
-validate_root_block() {
-    local pdbqt_file=$1
-    local root_line
-    local end_line
-    local between_lines
-
-    root_line=$(awk '/^[[:space:]]*ROOT[[:space:]]*$/ {print NR; exit}' "$pdbqt_file")
-    end_line=$(awk '/^[[:space:]]*ENDROOT[[:space:]]*$/ {line=NR} END {if (line) print line}' "$pdbqt_file")
-
-    if [ -z "${root_line:-}" ] || [ -z "${end_line:-}" ]; then
-        log_error "Missing ROOT/ENDROOT markers in receptor PDBQT: ${pdbqt_file}"
-        return 1
-    fi
-
-    if [ "$end_line" -le "$root_line" ]; then
-        log_error "Invalid ROOT/ENDROOT ordering in receptor PDBQT: ${pdbqt_file}"
-        return 1
-    fi
-
-    between_lines=$((end_line - root_line - 1))
-    if [ "$between_lines" -le 0 ]; then
-        log_error "No content found between ROOT and ENDROOT in receptor PDBQT: ${pdbqt_file}"
-        return 1
-    fi
-
-    return 0
 }
 
 while [[ $# -gt 0 ]]; do
@@ -126,21 +97,14 @@ fi
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 if [ -f "$OUTPUT_FILE" ] && [ "$FORCE" -eq 0 ]; then
-    if validate_root_block "$OUTPUT_FILE"; then
-        log_info "Reusing existing receptor PDBQT: ${OUTPUT_FILE}"
-        echo "$OUTPUT_FILE"
-        exit 0
-    fi
-    log_info "Existing receptor PDBQT is invalid. Rebuilding: ${OUTPUT_FILE}"
+    log_info "Reusing existing receptor PDBQT: ${OUTPUT_FILE}"
+    echo "$OUTPUT_FILE"
+    exit 0
 fi
 
 log_info "Preparing receptor with obabel: ${INPUT_PDB} -> ${OUTPUT_FILE}"
 if ! obabel -ipdb "$INPUT_PDB" -opdbqt -O "$OUTPUT_FILE" -xr --addpolarh --partialcharge gasteiger; then
     log_error "obabel receptor preparation failed for ${PROTEIN}"
-    exit 1
-fi
-
-if ! validate_root_block "$OUTPUT_FILE"; then
     exit 1
 fi
 

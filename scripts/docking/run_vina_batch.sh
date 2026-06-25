@@ -80,7 +80,8 @@ import json
 
 
 df = pd.read_csv("${seq_file}")
-row = df.loc[df['name'] == "${protein}", 'docking box']
+name_col = 'name' if 'name' in df.columns else 'protein_name'
+row = df.loc[df[name_col] == "${protein}", 'docking box']
 if row.empty:
     raise ValueError("Protein not found in sequences.csv: ${protein}")
 cell = row.iloc[0]

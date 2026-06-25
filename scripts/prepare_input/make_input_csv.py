@@ -33,13 +33,14 @@ def main():
     except Exception as e:
         sys.exit(f"Error reading sequences file {args.sequences}: {e}")
 
-    if "name" not in seq_df.columns or "sequence" not in seq_df.columns:
-        sys.exit("Sequences file must have columns: name, sequence")
+    name_col = "name" if "name" in seq_df.columns else "protein_name"
+    if name_col not in seq_df.columns or "sequence" not in seq_df.columns:
+        sys.exit("Sequences file must have columns: name (or protein_name), sequence")
 
-    if args.protein not in seq_df["name"].values:
+    if args.protein not in seq_df[name_col].values:
         sys.exit(f"Protein '{args.protein}' not found in {args.sequences}")
 
-    seq = seq_df.loc[seq_df["name"] == args.protein, "sequence"].iloc[0]
+    seq = seq_df.loc[seq_df[name_col] == args.protein, "sequence"].iloc[0]
 
     # --- Read SMILES ---
     try:

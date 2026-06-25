@@ -54,11 +54,12 @@ PROTEINS=$(get_proteins)
 for PROTEIN in $PROTEINS; do
     log_info "Processing protein: $PROTEIN"
 
-    OUTDIR="/home/ubuntu/${PROTEIN}/boltz2_tmp/input"
-    TOKEN="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_input.done"
-    MSA="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
+    OUTDIR="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/input"
+    TOKEN="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/boltz_input.done"
+    BOLTZ_TMP="/home/ubuntu/${PROTEIN}/boltz2_tmp"
+    MSA="${BOLTZ_TMP}/boltz_results_${PROTEIN}/msa/${PROTEIN}_0.csv"
     SELECTED="$(get_selected_csv "${PROTEIN}")"
-    CONFIDENCE="/home/ubuntu/${PROTEIN}/boltz2_tmp/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
+    CONFIDENCE="${BOLTZ_TMP}/boltz_results_${PROTEIN}/predictions/${PROTEIN}/confidence_${PROTEIN}_model_0.json"
 
     if [ -f "$TOKEN" ]; then
         log_info "Already completed for ${PROTEIN}, skipping"
@@ -78,12 +79,27 @@ for PROTEIN in $PROTEINS; do
     conda activate boltz
 
     mkdir -p "$OUTDIR"
-    python "$EXE" \
-        --output "$OUTDIR" \
-        --msa "$MSA" \
-        --smiles-path "$SELECTED" \
-        --protein-name "$PROTEIN" \
-        --protein-file "$SEQS_CSV"
+
+    # Use prefold YAML as template to preserve oligomeric state (e.g., trimers)
+    PREFOLD_YAML="${TASK_ROOT}/${PROTEIN}/fine_screening/Boltz2/prefold/${PROTEIN}.yaml"
+
+    if [ -f "$PREFOLD_YAML" ]; then
+        log_info "Using prefold YAML template: $PREFOLD_YAML"
+        python "$EXE" \
+            --output "$OUTDIR" \
+            --prefold-yaml "$PREFOLD_YAML" \
+            --msa "$MSA" \
+            --smiles-path "$SELECTED"
+    else
+        log_info "Prefold YAML not found, using legacy single-chain mode"
+        python "$EXE" \
+            --output "$OUTDIR" \
+            --msa "$MSA" \
+            --smiles-path "$SELECTED" \
+            --protein-name "$PROTEIN" \
+            --protein-file "$SEQS_CSV" \
+            --name-col name
+    fi
     touch "$TOKEN"
 
     log_info "Completed write_boltz2_input for ${PROTEIN}"

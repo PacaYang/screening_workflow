@@ -63,6 +63,7 @@ for PROTEIN in $PROTEINS; do
         --output "$OUTDIR" \
         --protein-name "$PROTEIN" \
         --protein-file "$SEQS_CSV" \
+        --name-col name \
         --protein-only
 
     log_info "Completed write_prefold_boltz2 for ${PROTEIN}"

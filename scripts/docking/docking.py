@@ -439,6 +439,8 @@ if __name__ == "__main__":
         parser.error("Must provide either --receptor-pdbqt or --pdb")
 
     def validate_root_block(pdbqt_file):
+        # obabel-prepared rigid receptors have no ROOT/ENDROOT markers — that's valid.
+        # Only validate structure if the markers are present (meeko-prepared files).
         root_line = None
         end_line = None
 
@@ -450,6 +452,8 @@ if __name__ == "__main__":
                 elif token == "ENDROOT":
                     end_line = lineno
 
+        if root_line is None and end_line is None:
+            return  # obabel rigid receptor — no markers expected, Vina accepts it fine
         if root_line is None or end_line is None:
             raise ValueError(f"Missing ROOT/ENDROOT markers in receptor PDBQT: {pdbqt_file}")
         if end_line <= root_line:

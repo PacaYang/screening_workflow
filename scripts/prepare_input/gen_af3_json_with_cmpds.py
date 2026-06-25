@@ -10,17 +10,18 @@ import glob
 import argparse
 
 def update_json(target_json, compound_smiles, output_path, i):
-    # Step 1: Read the JSON file
+    # Step 1: Read the JSON file (prefold *_data.json carries MSA + templates)
     with open(target_json, "r") as f:
         data = json.load(f)  # Load JSON data as a Python dictionary
 
     data['name'] = data['name'] + str(i)
     data['version'] = 2
-    # Step 2: Add a new argument (key-value pair)
-    data["sequences"].append({})
-    data["sequences"][1]["ligand"] = {}
-    data["sequences"][1]["ligand"]["id"] = "Z"
-    data["sequences"][1]["ligand"]["smiles"] = compound_smiles
+    # Drop null top-level fields that AF3's parser rejects when present-but-null
+    for k in ('bondedAtomPairs', 'userCCD'):
+        if k in data and data[k] is None:
+            del data[k]
+    # Step 2: Append ligand as a new sequence entry (not within existing entry)
+    data["sequences"].append({"ligand": {"id": "Z", "smiles": compound_smiles}})
 
     # Step 3: Save the updated JSON file
     with open(output_path, "w") as f:
@@ -45,10 +46,12 @@ def main():
 
     args = parser.parse_args()
 
-    output_folder_gradparent = args.output_dir 
+    output_folder_gradparent = args.output_dir
     smiles_list = pd.read_csv(args.smiles_file)[args.smiles_col]
     file = args.input_json
-    target = (file.split('/')[-1]).split("_data.json")[0]
+    # Extract base name: TNFa.json -> TNFa, TNFa_data.json -> TNFa
+    basename = os.path.basename(file)
+    target = basename.replace('_data.json', '').replace('.json', '').lower()
     i = 0 # track number of file written
     for smiles in smiles_list:
         filename = target + '_' + str(i) + ".json"
