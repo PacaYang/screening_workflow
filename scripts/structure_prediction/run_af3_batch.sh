@@ -217,11 +217,7 @@ with open('\$job_output/smiles.txt', 'w') as f:
     cp "\$compound_dir"/*_confidences.json "\$job_output/" 2>/dev/null || true
     cp "\$compound_dir"/*_model.cif "\$job_output/" 2>/dev/null || true
 
-    # Also copy every per-sample model AF3 generated (seed-*_sample-*/), not just the
-    # top-ranked one. AF3 runs 5 diffusion samples per seed by default and only the winner
-    # was being kept here; the discarded 4 can include real pocket-contacting poses the
-    # top-ranked sample misses (confirmed on a TGFBR2 screen rerun: 29% of a 28-compound
-    # spot check had a hit/no-hit call that depended on which single sample ranked first).
+    # Keep all 5 diffusion samples by default now, not just the top-ranked one.
     for sample_dir in "\$compound_dir"/seed-*_sample-*; do
         [ -d "\$sample_dir" ] || continue
         sample_name=\$(basename "\$sample_dir")
