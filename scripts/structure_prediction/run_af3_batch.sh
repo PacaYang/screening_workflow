@@ -212,10 +212,22 @@ with open('\$job_output/smiles.txt', 'w') as f:
 " 2>/dev/null || echo "Warning: Could not extract SMILES for job \$job_num"
     fi
 
-    # Copy only the confidence files (actual prediction scores)
+    # Copy the top-ranked model and its confidence files
     cp "\$compound_dir"/*_summary_confidences.json "\$job_output/" 2>/dev/null || true
     cp "\$compound_dir"/*_confidences.json "\$job_output/" 2>/dev/null || true
     cp "\$compound_dir"/*_model.cif "\$job_output/" 2>/dev/null || true
+
+    # Also copy every per-sample model AF3 generated (seed-*_sample-*/), not just the
+    # top-ranked one. AF3 runs 5 diffusion samples per seed by default and only the winner
+    # was being kept here; the discarded 4 can include real pocket-contacting poses the
+    # top-ranked sample misses (confirmed on a TGFBR2 screen rerun: 29% of a 28-compound
+    # spot check had a hit/no-hit call that depended on which single sample ranked first).
+    for sample_dir in "\$compound_dir"/seed-*_sample-*; do
+        [ -d "\$sample_dir" ] || continue
+        sample_name=\$(basename "\$sample_dir")
+        mkdir -p "\$job_output/\$sample_name"
+        cp "\$sample_dir"/*_model.cif "\$job_output/\$sample_name/" 2>/dev/null || true
+    done
 
     echo "  Copied results for job \$job_num"
 done
