@@ -212,10 +212,18 @@ with open('\$job_output/smiles.txt', 'w') as f:
 " 2>/dev/null || echo "Warning: Could not extract SMILES for job \$job_num"
     fi
 
-    # Copy only the confidence files (actual prediction scores)
+    # Copy the top-ranked model and its confidence files
     cp "\$compound_dir"/*_summary_confidences.json "\$job_output/" 2>/dev/null || true
     cp "\$compound_dir"/*_confidences.json "\$job_output/" 2>/dev/null || true
     cp "\$compound_dir"/*_model.cif "\$job_output/" 2>/dev/null || true
+
+    # Keep all 5 diffusion samples by default now, not just the top-ranked one.
+    for sample_dir in "\$compound_dir"/seed-*_sample-*; do
+        [ -d "\$sample_dir" ] || continue
+        sample_name=\$(basename "\$sample_dir")
+        mkdir -p "\$job_output/\$sample_name"
+        cp "\$sample_dir"/*_model.cif "\$job_output/\$sample_name/" 2>/dev/null || true
+    done
 
     echo "  Copied results for job \$job_num"
 done
