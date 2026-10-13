@@ -26,7 +26,11 @@ MAX_ITERATIONS=0
 # Skip flags
 SKIP_AF3=0
 SKIP_BOLTZ2=0
+SKIP_NESSO=0
+SKIP_PROTENIX=0
+SKIP_OPENFOLD3=0
 SKIP_VINA=0
+SKIP_ROSETTAFOLD=0
 SKIP_MD_PBSA=0
 
 # Parse arguments
@@ -41,7 +45,11 @@ while [[ $# -gt 0 ]]; do
         --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
         --skip-af3) SKIP_AF3=1; shift ;;
         --skip-boltz2) SKIP_BOLTZ2=1; shift ;;
+        --skip-nesso) SKIP_NESSO=1; shift ;;
+        --skip-protenix) SKIP_PROTENIX=1; shift ;;
+        --skip-openfold3) SKIP_OPENFOLD3=1; shift ;;
         --skip-vina) SKIP_VINA=1; shift ;;
+        --skip-rosettafold) SKIP_ROSETTAFOLD=1; shift ;;
         --skip-md-pbsa) SKIP_MD_PBSA=1; shift ;;
         --state-file) STATE_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -57,17 +65,20 @@ fi
 # Delegate to streaming or batch mode
 if [ "$STREAMING_MODE" -eq 1 ]; then
     log_info "Using streaming collection mode"
-    exec bash "${SCRIPT_DIR}/stage6_collect_results_streaming.sh" \
-        --task-root "$TASK_ROOT" \
-        --proteins "$PROTEINS" \
-        $([ "$DRY_RUN" -eq 1 ] && echo "--dry-run") \
-        --collection-interval "$COLLECTION_INTERVAL" \
-        --max-iterations "$MAX_ITERATIONS" \
-        $([ "$SKIP_AF3" -eq 1 ] && echo "--skip-af3") \
-        $([ "$SKIP_BOLTZ2" -eq 1 ] && echo "--skip-boltz2") \
-        $([ "$SKIP_VINA" -eq 1 ] && echo "--skip-vina") \
-        $([ "$SKIP_MD_PBSA" -eq 1 ] && echo "--skip-md-pbsa") \
-        $([ -n "$STATE_FILE" ] && echo "--state-file $STATE_FILE")
+    args=(--task-root "$TASK_ROOT" --proteins "$PROTEINS"
+          --collection-interval "$COLLECTION_INTERVAL"
+          --max-iterations "$MAX_ITERATIONS")
+    [ "$DRY_RUN" -eq 1 ] && args+=(--dry-run)
+    [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
+    [ "$SKIP_BOLTZ2" -eq 1 ] && args+=(--skip-boltz2)
+    [ "$SKIP_NESSO" -eq 1 ] && args+=(--skip-nesso)
+    [ "$SKIP_PROTENIX" -eq 1 ] && args+=(--skip-protenix)
+    [ "$SKIP_OPENFOLD3" -eq 1 ] && args+=(--skip-openfold3)
+    [ "$SKIP_VINA" -eq 1 ] && args+=(--skip-vina)
+    [ "$SKIP_ROSETTAFOLD" -eq 1 ] && args+=(--skip-rosettafold)
+    [ "$SKIP_MD_PBSA" -eq 1 ] && args+=(--skip-md-pbsa)
+    [ -n "$STATE_FILE" ] && args+=(--state-file "$STATE_FILE")
+    exec bash "${SCRIPT_DIR}/stage6_collect_results_streaming.sh" "${args[@]}"
 fi
 
 # Batch mode (original behavior)
@@ -81,7 +92,7 @@ main() {
     [ -n "$STATE_FILE" ] && update_stage_status "6" "running"
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        log_info "[DRY RUN] Would collect scores for AF3, Boltz2, Vina, PBSA"
+        log_info "[DRY RUN] Would collect scores for AF3, Boltz2, Nesso, Protenix, OpenFold3, Vina, PBSA"
         return 0
     fi
 
@@ -118,6 +129,19 @@ main() {
             fi
         fi
 
+        # Native ML method scores; summaries are rebuilt to reflect retries.
+        for method in Nesso Protenix OpenFold3; do
+            case "$method" in
+                Nesso) [ "$SKIP_NESSO" -eq 1 ] && continue ;;
+                Protenix) [ "$SKIP_PROTENIX" -eq 1 ] && continue ;;
+                OpenFold3) [ "$SKIP_OPENFOLD3" -eq 1 ] && continue ;;
+            esac
+            python "${SCRIPT_DIR}/../../scoring/${method,,}_scores.py" \
+                --results-folder "${base}/fine_screening/${method}/output" \
+                --selected-csv "$selected" \
+                --output-dir "${base}/fine_screening/${method}"
+        done
+
         # Vina scores
         if [ "$SKIP_VINA" -eq 0 ]; then
             local vina_results="${base}/fine_screening/Vina/results.csv"
@@ -148,6 +172,27 @@ main() {
                     --smiles_csv "$selected" \
                     --outdir "$pbsa_outdir"
             fi
+        fi
+
+        compile_args=()
+        [ "$SKIP_AF3" -eq 1 ] && compile_args+=(--skip-method AF3)
+        [ "$SKIP_BOLTZ2" -eq 1 ] && compile_args+=(--skip-method Boltz2)
+        [ "$SKIP_NESSO" -eq 1 ] && compile_args+=(--skip-method Nesso)
+        [ "$SKIP_PROTENIX" -eq 1 ] && compile_args+=(--skip-method Protenix)
+        [ "$SKIP_OPENFOLD3" -eq 1 ] && compile_args+=(--skip-method OpenFold3)
+        [ "$SKIP_VINA" -eq 1 ] && compile_args+=(--skip-method Vina)
+        [ "$SKIP_ROSETTAFOLD" -eq 1 ] && compile_args+=(--skip-method RoseTTAFold)
+        if { [ "$SKIP_NESSO" -eq 0 ] && [ -f "${base}/fine_screening/Nesso/summary.csv" ]; } || \
+           { [ "$SKIP_PROTENIX" -eq 0 ] && [ -f "${base}/fine_screening/Protenix/summary.csv" ]; } || \
+           { [ "$SKIP_OPENFOLD3" -eq 0 ] && [ -f "${base}/fine_screening/OpenFold3/summary.csv" ]; } || \
+           { [ "$SKIP_AF3" -eq 0 ] && [ -f "${base}/fine_screening/AF3/summary.csv" ]; } || \
+           { [ "$SKIP_BOLTZ2" -eq 0 ] && [ -f "${base}/fine_screening/Boltz2/summary.csv" ]; } || \
+           { [ "$SKIP_VINA" -eq 0 ] && [ -f "${base}/fine_screening/Vina/results.csv" ]; } || \
+           { [ "$SKIP_ROSETTAFOLD" -eq 0 ] && [ -f "${base}/fine_screening/RoseTTAFold/summary.csv" ]; }; then
+            python "${SCRIPT_DIR}/../../scoring/compile_scores.py" \
+                --target-dir "$base" --target-name "$protein" \
+                --output "${base}/fine_screening/compiled_scores.csv" \
+                "${compile_args[@]}"
         fi
     done
 

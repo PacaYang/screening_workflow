@@ -210,8 +210,10 @@ def generate_pymol_script(df_with_clusters, output_dir, protein_name, structure_
 
         f.write("# Hide everything initially\n")
         f.write("hide everything\n")
-        f.write("show cartoon, chain A\n")
-        f.write("color gray80, chain A\n\n")
+        # Protein = everything that is not the ligand (resname LG1). RFAA may label
+        # protein chains A, B, C... so don't assume a single chain.
+        f.write("show cartoon, polymer\n")
+        f.write("color gray80, polymer\n\n")
 
         # Get unique clusters (excluding outliers)
         clusters = sorted([c for c in df_with_clusters['cluster'].unique() if c != -1])
@@ -230,31 +232,35 @@ def generate_pymol_script(df_with_clusters, output_dir, protein_name, structure_
             # Get unique residues
             unique_residues = list(set(all_residues))
 
-            # Parse residue IDs
-            resids = []
+            # Parse residue ids per chain (format: "<chain>:<resname><resid>").
+            resids_by_chain = {}
             for res in unique_residues:
                 try:
-                    # Format: A:CYS45 -> extract 45
-                    resid = ''.join(filter(str.isdigit, res.split(':')[1]))
+                    chain, rest = res.split(':')
+                    resid = ''.join(filter(str.isdigit, rest))
                     if resid:
-                        resids.append(resid)
-                except:
+                        resids_by_chain.setdefault(chain, []).append(resid)
+                except Exception:
                     continue
 
-            if resids:
+            if resids_by_chain:
                 f.write(f"# Cluster {cluster_id} ({len(cluster_df)} compounds)\n")
                 selection = f"cluster_{cluster_id}"
-                resid_str = '+'.join(resids)
-                f.write(f"select {selection}, chain A and resi {resid_str}\n")
+                # OR together a per-chain "chain X and resi ..." selection.
+                parts = [
+                    f"(chain {chain} and resi {'+'.join(resids)})"
+                    for chain, resids in sorted(resids_by_chain.items())
+                ]
+                f.write(f"select {selection}, {' or '.join(parts)}\n")
                 f.write(f"show sticks, {selection}\n")
                 f.write(f"color {color}, {selection}\n\n")
 
         f.write("# Show ligand if present\n")
-        f.write("show sticks, chain B\n")
-        f.write("color white, chain B\n\n")
+        f.write("show sticks, resn LG1\n")
+        f.write("color white, resn LG1\n\n")
 
         f.write("# Set view\n")
-        f.write("zoom chain A\n")
+        f.write("zoom polymer\n")
         f.write("bg_color white\n")
 
     print(f"PyMOL script saved to {script_path}")

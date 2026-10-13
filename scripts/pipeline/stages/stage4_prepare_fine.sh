@@ -27,9 +27,13 @@ POLL_INTERVAL=300
 SKIP_AF3=0
 SKIP_BOLTZ2=0
 SKIP_ROSETTAFOLD=0
+SKIP_NESSO=0
+SKIP_PROTENIX=0
+SKIP_OPENFOLD3=0
 
-# Template mode (single-stage, no prefold) and multi-ligand
+# Template mode (single-stage, no prefold) and multi-ligand for AF3-like methods
 TEMPLATE_MODE=0
+PRECOMPUTE_MSA=0
 N_LIGANDS=1
 
 # Parse arguments
@@ -42,7 +46,11 @@ while [[ $# -gt 0 ]]; do
         --skip-af3) SKIP_AF3=1; shift ;;
         --skip-boltz2) SKIP_BOLTZ2=1; shift ;;
         --skip-rosettafold) SKIP_ROSETTAFOLD=1; shift ;;
+        --skip-nesso) SKIP_NESSO=1; shift ;;
+        --skip-protenix) SKIP_PROTENIX=1; shift ;;
+        --skip-openfold3) SKIP_OPENFOLD3=1; shift ;;
         --template-mode) TEMPLATE_MODE=1; shift ;;
+        --precompute-msa) PRECOMPUTE_MSA=1; shift ;;
         --n-ligands) N_LIGANDS="$2"; shift 2 ;;
         --state-file) STATE_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -52,6 +60,10 @@ done
 # Validate required arguments
 if [ -z "$TASK_ROOT" ] || [ -z "$PROTEINS" ]; then
     log_error "Missing required arguments"
+    exit 1
+fi
+if [ "$TEMPLATE_MODE" -eq 1 ] && [ "$PRECOMPUTE_MSA" -eq 1 ]; then
+    log_error "--template-mode and --precompute-msa are mutually exclusive"
     exit 1
 fi
 
@@ -66,37 +78,74 @@ main() {
     export_pipeline_env "$TASK_ROOT" "$PROTEINS"
     # Make template settings visible to the input writers / batch scripts.
     export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+    export MASTER_PRECOMPUTE_MSA="$PRECOMPUTE_MSA"
     export MASTER_N_LIGANDS="$N_LIGANDS"
 
-    # Template mode: single stage, no prefold/MSA. Write template inputs directly
-    # from sequences.csv, then prepare the docking CSV splits as usual.
+    # Template mode writes direct inputs for all AF3-like methods. RoseTTAFold
+    # remains on its existing two-stage prefold/MSA flow.
     if [ "$TEMPLATE_MODE" -eq 1 ]; then
-        log_info "Stage 4 (template mode): writing template-based fine screening inputs"
+        log_info "Stage 4 (template mode): direct template inputs for AF3/Boltz2/Nesso/Protenix/OpenFold3"
+
+        # AF3 & Boltz2: write template inputs (no prefold).
         [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_af3_template_input.sh"
         [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_boltz2_template_input.sh"
-        # RoseTTAFold template inputs are generated inside run_rosettafold_batch.sh (stage 5).
+        [ "$SKIP_NESSO" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_nesso_input.sh" --mode template
+        [ "$SKIP_PROTENIX" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_protenix_input.sh" --mode template
+        [ "$SKIP_OPENFOLD3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_openfold3_input.sh" --mode template
+
+        # RoseTTAFold: submit prefold jobs (unchanged from the two-stage flow).
+        [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_rosettafold_prefold.sh"
 
         if [ "$DRY_RUN" -eq 1 ]; then
-            log_info "[DRY RUN] Would write template inputs and split docking CSV"
+            log_info "[DRY RUN] Would write template inputs for AF3/Boltz2/Nesso/Protenix/OpenFold3, submit RoseTTAFold prefold, wait for it, and split docking CSV"
             return 0
         fi
 
         bash "${SCRIPT_DIR}/../../input/run_split_csv.sh"
+
+        # Wait for RoseTTAFold prefold jobs before stage 5 submits the RF batch.
+        if [ "$SKIP_ROSETTAFOLD" -eq 0 ]; then
+            log_info "Stage 4 (template mode): waiting for RoseTTAFold prefold jobs"
+            local rf_job_files=()
+            for protein in $PROTEINS; do
+                local jf="${TASK_ROOT}/${protein}/fine_screening/RoseTTAFold/job_ids.txt"
+                [ -f "$jf" ] && rf_job_files+=("$jf")
+            done
+            if [ ${#rf_job_files[@]} -gt 0 ]; then
+                wait_for_jobs_with_progress "$POLL_INTERVAL" "${rf_job_files[@]}"
+            fi
+        fi
 
         [ -n "$STATE_FILE" ] && update_stage_status "4" "completed" 0
         log_stage_complete "Stage 4: Prepare Fine Screening (template mode)"
         return 0
     fi
 
-    # 4a — Write prefold inputs
-    log_info "Stage 4a: Writing prefold inputs"
-    [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_boltz2.sh"
+    # 4a — Write prefold inputs or submit the shared ColabFold MSA search.
+    if [ "$PRECOMPUTE_MSA" -eq 1 ]; then
+        log_info "Stage 4a: Submitting shared ColabFold MSA searches"
+        if [ "$SKIP_AF3" -eq 0 ] || [ "$SKIP_BOLTZ2" -eq 0 ] || \
+           [ "$SKIP_PROTENIX" -eq 0 ] || [ "$SKIP_OPENFOLD3" -eq 0 ]; then
+            run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_colabfold_msa.sh"
+        fi
+    else
+        log_info "Stage 4a: Writing prefold inputs"
+        [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_af3.sh"
+        [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_boltz2.sh"
+        [ "$SKIP_PROTENIX" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_protenix.sh"
+        [ "$SKIP_OPENFOLD3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_openfold3.sh"
+    fi
+    [ "$SKIP_NESSO" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../input/run_write_prefold_nesso.sh"
 
     # 4b — Submit prefold SLURM jobs
     log_info "Stage 4b: Submitting prefold jobs"
-    [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_af3.sh"
-    [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_boltz2.sh"
+    if [ "$PRECOMPUTE_MSA" -eq 0 ]; then
+        [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_af3.sh"
+        [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_boltz2.sh"
+        [ "$SKIP_PROTENIX" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_protenix.sh"
+        [ "$SKIP_OPENFOLD3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_openfold3.sh"
+    fi
+    [ "$SKIP_NESSO" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_prefold_nesso.sh"
     [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/prefold/run_rosettafold_prefold.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -108,14 +157,22 @@ main() {
     log_info "Stage 4c: Waiting for prefold jobs"
     local job_files=()
 
-    if [ "$SKIP_AF3" -eq 0 ]; then
+    if [ "$PRECOMPUTE_MSA" -eq 1 ] && { [ "$SKIP_AF3" -eq 0 ] || [ "$SKIP_BOLTZ2" -eq 0 ] || \
+       [ "$SKIP_PROTENIX" -eq 0 ] || [ "$SKIP_OPENFOLD3" -eq 0 ]; }; then
+        for protein in $PROTEINS; do
+            local jf="${TASK_ROOT}/${protein}/fine_screening/MSA/job_ids.txt"
+            [ -s "$jf" ] && job_files+=("$jf")
+        done
+    fi
+
+    if [ "$PRECOMPUTE_MSA" -eq 0 ] && [ "$SKIP_AF3" -eq 0 ]; then
         for protein in $PROTEINS; do
             local jf="${TASK_ROOT}/${protein}/fine_screening/AF3/prefold/job_ids.txt"
             [ -f "$jf" ] && job_files+=("$jf")
         done
     fi
 
-    if [ "$SKIP_BOLTZ2" -eq 0 ]; then
+    if [ "$PRECOMPUTE_MSA" -eq 0 ] && [ "$SKIP_BOLTZ2" -eq 0 ]; then
         for protein in $PROTEINS; do
             local jf="${TASK_ROOT}/${protein}/fine_screening/Boltz2/prefold/job_ids.txt"
             [ -f "$jf" ] && job_files+=("$jf")
@@ -129,14 +186,41 @@ main() {
         done
     fi
 
+    for method in Nesso Protenix OpenFold3; do
+        skip_var="SKIP_${method^^}"
+        skip_value="${!skip_var}"
+        if [ "$skip_value" -eq 0 ] && { [ "$method" = Nesso ] || [ "$PRECOMPUTE_MSA" -eq 0 ]; }; then
+            for protein in $PROTEINS; do
+                local jf="${TASK_ROOT}/${protein}/fine_screening/${method}/prefold/job_ids.txt"
+                [ -f "$jf" ] && job_files+=("$jf")
+            done
+        fi
+    done
+
     if [ ${#job_files[@]} -gt 0 ]; then
         wait_for_jobs_with_progress "$POLL_INTERVAL" "${job_files[@]}"
+    fi
+
+    if [ "$PRECOMPUTE_MSA" -eq 1 ] && { [ "$SKIP_AF3" -eq 0 ] || [ "$SKIP_BOLTZ2" -eq 0 ] || \
+       [ "$SKIP_PROTENIX" -eq 0 ] || [ "$SKIP_OPENFOLD3" -eq 0 ]; }; then
+        for protein in $PROTEINS; do
+            python3 "${SCRIPT_DIR}/../../structure_prediction/colabfold_msa.py" check \
+                --sequences-csv "${TASK_ROOT}/Input/sequences.csv" \
+                --protein "$protein" \
+                --msa-dir "${TASK_ROOT}/${protein}/fine_screening/MSA" >/dev/null || {
+                log_error "Shared ColabFold MSA validation failed for ${protein}"
+                exit 1
+            }
+        done
     fi
 
     # 4d — Write fine screening inputs
     log_info "Stage 4d: Writing fine screening inputs"
     [ "$SKIP_AF3" -eq 0 ] && bash "${SCRIPT_DIR}/../../input/run_write_af3_input.sh"
     [ "$SKIP_BOLTZ2" -eq 0 ] && bash "${SCRIPT_DIR}/../../input/run_write_boltz2_input.sh"
+    [ "$SKIP_NESSO" -eq 0 ] && bash "${SCRIPT_DIR}/../../input/run_write_nesso_input.sh"
+    [ "$SKIP_PROTENIX" -eq 0 ] && bash "${SCRIPT_DIR}/../../input/run_write_protenix_input.sh"
+    [ "$SKIP_OPENFOLD3" -eq 0 ] && bash "${SCRIPT_DIR}/../../input/run_write_openfold3_input.sh"
     bash "${SCRIPT_DIR}/../../input/run_split_csv.sh"
 
     # Update state to completed

@@ -17,6 +17,9 @@ source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 # Load configuration from environment or use defaults
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
 SCRIPT_ROOT="/home/yangl_pacagen_com/screening_workflow/scripts"
+PRECOMPUTE_MSA="${MASTER_PRECOMPUTE_MSA:-0}"
+AF3_EXTRA_ARGS=""
+[ "$PRECOMPUTE_MSA" -eq 1 ] && AF3_EXTRA_ARGS="--noresolve_msa_overlaps"
 
 # Tools
 AF3_EXE="/home/yangl_pacagen_com/Applications/alphafold3/run_alphafold.py"
@@ -27,6 +30,8 @@ AF3_DB_DIR="${MASTER_AF3_DB_DIR:-/home/yangl_pacagen_com/Applications/model_weig
 
 # Number of batches to split jobs into
 N_BATCHES=40
+GROUP_SIZE="${MASTER_N_LIGANDS:-1}"
+[ "$GROUP_SIZE" -lt 1 ] && GROUP_SIZE=1
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"
@@ -121,15 +126,17 @@ export XLA_CLIENT_MEM_FRACTION=0.95
 # Calculate job range for this batch
 SMILES_FILE="${SELECTED_CSV}"
 N_SMILES=\$(tail -n +2 "\$SMILES_FILE" | wc -l)
+N_INPUTS=\$(( (N_SMILES + ${GROUP_SIZE} - 1) / ${GROUP_SIZE} ))
 
-BATCH_SIZE=\$(( (\$N_SMILES + ${N_BATCHES} - 1) / ${N_BATCHES} ))
+BATCH_SIZE=\$(( (\$N_INPUTS + ${N_BATCHES} - 1) / ${N_BATCHES} ))
 START_IDX=\$(( ${batch_id} * \$BATCH_SIZE ))
 END_IDX=\$(( \$START_IDX + \$BATCH_SIZE ))
-if [ \$END_IDX -gt \$N_SMILES ]; then
-    END_IDX=\$N_SMILES
+if [ \$END_IDX -gt \$N_INPUTS ]; then
+    END_IDX=\$N_INPUTS
 fi
 
 echo "Total SMILES: \$N_SMILES"
+echo "Total prediction inputs: \$N_INPUTS (${GROUP_SIZE} ligand(s) per input)"
 echo "Batch size: \$BATCH_SIZE"
 echo "Processing jobs \$START_IDX to \$((\$END_IDX - 1))"
 
@@ -163,6 +170,7 @@ for i in \$(seq \$START_IDX \$((\$END_IDX - 1))); do
         --db_dir=${AF3_DB_DIR} \\
         --output_dir=\$LOCAL_OUT \\
         --norun_data_pipeline \\
+        ${AF3_EXTRA_ARGS} \\
         ; then
         SUCCESS_COUNT=\$((SUCCESS_COUNT + 1))
         echo "  ✓ Job \$i completed successfully"
@@ -206,7 +214,11 @@ for job_dir in \$BATCH_LOCAL_OUT/job_*; do
 import json
 with open('\$data_json') as f:
     data = json.load(f)
-smiles = data['sequences'][-1]['ligand']['smiles']
+smiles = next(
+    entry['ligand']['smiles']
+    for entry in data['sequences']
+    if entry.get('ligand', {}).get('id') == 'Z'
+)
 with open('\$job_output/smiles.txt', 'w') as f:
     f.write(smiles)
 " 2>/dev/null || echo "Warning: Could not extract SMILES for job \$job_num"
@@ -291,9 +303,11 @@ for PROTEIN in $PROTEINS; do
     fi
 
     N_SMILES=$(tail -n +2 "$SELECTED_CSV" | wc -l)
-    BATCH_SIZE=$(( ($N_SMILES + $N_BATCHES - 1) / $N_BATCHES ))
+    N_INPUTS=$(( (N_SMILES + GROUP_SIZE - 1) / GROUP_SIZE ))
+    BATCH_SIZE=$(( (N_INPUTS + N_BATCHES - 1) / N_BATCHES ))
 
     log_info "Total SMILES for ${PROTEIN}: ${N_SMILES}"
+    log_info "Total prediction inputs for ${PROTEIN}: ${N_INPUTS}"
     log_info "Batch size: ${BATCH_SIZE}"
 
     # Clear previous job list
@@ -307,7 +321,7 @@ for PROTEIN in $PROTEINS; do
     for BATCH_ID in $(seq 0 $((N_BATCHES - 1))); do
         # Check if this batch has jobs
         START_IDX=$((BATCH_ID * BATCH_SIZE))
-        if [ $START_IDX -lt $N_SMILES ]; then
+        if [ $START_IDX -lt $N_INPUTS ]; then
             if submit_af3_batch "$PROTEIN" "$BATCH_ID"; then
                 SUBMITTED=$((SUBMITTED + 1))
             fi

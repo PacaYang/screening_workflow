@@ -39,6 +39,9 @@ SKIP_CONPLEX=0
 SKIP_AF3=0
 SKIP_BOLTZ2=0
 SKIP_ROSETTAFOLD=0
+SKIP_NESSO=0
+SKIP_PROTENIX=0
+SKIP_OPENFOLD3=0
 SKIP_VINA=0
 SKIP_DIFFDOCK=0
 SKIP_MD_PBSA=0
@@ -49,9 +52,11 @@ CONFIG_FILE=""
 RESUME_ID=""
 COMMAND="run"
 
-# Template mode — single-stage folding (no prefold/MSA), template-based,
-# multi-chain / multi-ligand. Off by default (uses the two-stage prefold flow).
+# Template mode — single-stage folding for AF3-like methods (no prefold/MSA,
+# template-based, multi-chain / multi-ligand). RoseTTAFold is excluded and always
+# uses its two-stage prefold/MSA flow. Off by default (methods use prefold too).
 TEMPLATE_MODE=0
+PRECOMPUTE_MSA=0
 N_LIGANDS=1
 
 # Streaming collection configuration
@@ -103,10 +108,18 @@ Options:
   --stop-after STAGE       Stop after stage 1-6 (default: 6)
   --poll-interval SEC      Job poll interval (default: 300)
   --skip-<method>          Skip specific methods
+  --skip-nesso             Skip NESSO fine screening
+  --skip-protenix          Skip Protenix fine screening
+  --skip-openfold3         Skip OpenFold3 fine screening
   --target-n N             Compounds for fine screening (default: 3000)
-  --template-mode          Single-stage folding: skip prefold/MSA, use template
+  --template-mode          AF3-like methods: single-stage folding, skip
+                           prefold/MSA, use template
                            (Input/protein_file/<P>/<P>.cif for Boltz2,
-                           <P>_<CHAIN>.cif for AF3), multi-chain & multi-ligand
+                           <P>_<CHAIN>.cif for AF3), multi-chain & multi-ligand.
+                           RoseTTAFold is excluded and keeps its prefold/MSA flow.
+  --precompute-msa         Search one shared ColabFold A3M per unique chain sequence
+                           and reuse it in AF3, Boltz2, Protenix, and OpenFold3.
+                           Cannot be combined with --template-mode.
   --n-ligands N            Compounds to co-fold per prediction (default 1, id Z)
   --streaming-collection   Use streaming results collection (default)
   --batch-collection       Use batch results collection
@@ -175,11 +188,15 @@ parse_arguments() {
             --skip-af3) SKIP_AF3=1; shift ;;
             --skip-boltz2) SKIP_BOLTZ2=1; shift ;;
             --skip-rosettafold) SKIP_ROSETTAFOLD=1; shift ;;
+            --skip-nesso) SKIP_NESSO=1; shift ;;
+            --skip-protenix) SKIP_PROTENIX=1; shift ;;
+            --skip-openfold3) SKIP_OPENFOLD3=1; shift ;;
             --skip-vina) SKIP_VINA=1; shift ;;
             --skip-diffdock) SKIP_DIFFDOCK=1; shift ;;
             --skip-md-pbsa) SKIP_MD_PBSA=1; shift ;;
             --target-n) TARGET_N="$2"; shift 2 ;;
             --template-mode) TEMPLATE_MODE=1; shift ;;
+            --precompute-msa) PRECOMPUTE_MSA=1; shift ;;
             --n-ligands) N_LIGANDS="$2"; shift 2 ;;
             --streaming-collection) STREAMING_COLLECTION=1; shift ;;
             --batch-collection) STREAMING_COLLECTION=0; shift ;;
@@ -239,21 +256,33 @@ execute_stage() {
             [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
             [ "$SKIP_BOLTZ2" -eq 1 ] && args+=(--skip-boltz2)
             [ "$SKIP_ROSETTAFOLD" -eq 1 ] && args+=(--skip-rosettafold)
+            [ "$SKIP_NESSO" -eq 1 ] && args+=(--skip-nesso)
+            [ "$SKIP_PROTENIX" -eq 1 ] && args+=(--skip-protenix)
+            [ "$SKIP_OPENFOLD3" -eq 1 ] && args+=(--skip-openfold3)
             [ "$TEMPLATE_MODE" -eq 1 ] && args+=(--template-mode)
+            [ "$PRECOMPUTE_MSA" -eq 1 ] && args+=(--precompute-msa)
             args+=(--n-ligands "$N_LIGANDS")
             ;;
         5)
             [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
             [ "$SKIP_BOLTZ2" -eq 1 ] && args+=(--skip-boltz2)
             [ "$SKIP_ROSETTAFOLD" -eq 1 ] && args+=(--skip-rosettafold)
+            [ "$SKIP_NESSO" -eq 1 ] && args+=(--skip-nesso)
+            [ "$SKIP_PROTENIX" -eq 1 ] && args+=(--skip-protenix)
+            [ "$SKIP_OPENFOLD3" -eq 1 ] && args+=(--skip-openfold3)
             [ "$SKIP_VINA" -eq 1 ] && args+=(--skip-vina)
             [ "$SKIP_DIFFDOCK" -eq 1 ] && args+=(--skip-diffdock)
             [ "$SKIP_MD_PBSA" -eq 1 ] && args+=(--skip-md-pbsa)
             [ "$TEMPLATE_MODE" -eq 1 ] && args+=(--template-mode)
+            [ "$PRECOMPUTE_MSA" -eq 1 ] && args+=(--precompute-msa)
+            args+=(--n-ligands "$N_LIGANDS")
             ;;
         6)
             [ "$SKIP_AF3" -eq 1 ] && args+=(--skip-af3)
             [ "$SKIP_BOLTZ2" -eq 1 ] && args+=(--skip-boltz2)
+            [ "$SKIP_NESSO" -eq 1 ] && args+=(--skip-nesso)
+            [ "$SKIP_PROTENIX" -eq 1 ] && args+=(--skip-protenix)
+            [ "$SKIP_OPENFOLD3" -eq 1 ] && args+=(--skip-openfold3)
             [ "$SKIP_VINA" -eq 1 ] && args+=(--skip-vina)
             [ "$SKIP_ROSETTAFOLD" -eq 1 ] && args+=(--skip-rosettafold)
             [ "$SKIP_MD_PBSA" -eq 1 ] && args+=(--skip-md-pbsa)
@@ -299,7 +328,14 @@ run_pipeline() {
     export MASTER_MODEL_WEIGHTS_DIR="$MODEL_WEIGHTS_DIR"
     export MASTER_AF3_WEIGHT_DIR="${MODEL_WEIGHTS_DIR}/AF3"
     export MASTER_AF3_DB_DIR="${MODEL_WEIGHTS_DIR}/af3_db"
+    export MASTER_NESSO_ROOT="${MASTER_NESSO_ROOT:-/home/yangl_pacagen_com/Applications/nesso}"
+    export MASTER_PROTENIX_ROOT="${MASTER_PROTENIX_ROOT:-/home/yangl_pacagen_com/Applications/Protenix}"
+    export MASTER_OPENFOLD3_ROOT="${MASTER_OPENFOLD3_ROOT:-/home/yangl_pacagen_com/Applications/openfold-3}"
+    export MASTER_NESSO_WEIGHTS="${MASTER_NESSO_WEIGHTS:-${MODEL_WEIGHTS_DIR}/Nesso}"
+    export MASTER_PROTENIX_WEIGHTS="${MASTER_PROTENIX_WEIGHTS:-${MODEL_WEIGHTS_DIR}/Protenix}"
+    export MASTER_OPENFOLD3_WEIGHTS="${MASTER_OPENFOLD3_WEIGHTS:-${MODEL_WEIGHTS_DIR}/OpenFold3}"
     export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+    export MASTER_PRECOMPUTE_MSA="$PRECOMPUTE_MSA"
     export MASTER_N_LIGANDS="$N_LIGANDS"
 
     start_progress_monitor "$TASK_ROOT" "$PROTEINS" "full" "$POLL_INTERVAL"
@@ -336,6 +372,11 @@ run_pipeline() {
 
 main() {
     parse_arguments "$@"
+
+    if [ "$TEMPLATE_MODE" -eq 1 ] && [ "$PRECOMPUTE_MSA" -eq 1 ]; then
+        log_error "--template-mode and --precompute-msa are mutually exclusive"
+        exit 1
+    fi
 
     case "$COMMAND" in
         run)

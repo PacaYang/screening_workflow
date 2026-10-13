@@ -13,49 +13,61 @@ from Bio.PDB import PDBParser
 
 
 def extract_binding_site_residues(pdb_path, distance_cutoff=5.0):
-    """Extract binding site residues from RoseTTAFold PDB file.
+    """Extract binding site residues from a RoseTTAFold PDB file.
+
+    Multichain-aware: RFAA relabels output chains sequentially (A, B, C... by config
+    order, proteins first then ligands), so the ligand chain is NOT fixed at 'B'. We
+    locate the ligand as the residue named 'LG1' wherever it appears, and treat every
+    other chain as protein. For multi-ligand co-folds the first LG1 found (the primary
+    screened compound, id Z) defines the binding site.
 
     Returns:
-        binding_site_residues: str - Comma-separated list
-        binding_site_center: tuple - (x, y, z) coordinates
+        binding_site_residues: str - Comma-separated list (e.g., "A:CYS45,B:ARG67")
+        binding_site_center: str - "x,y,z" of the ligand centroid
         num_binding_residues: int - Count of residues within cutoff
     """
     try:
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure('complex', pdb_path)
+        model = structure[0]
 
-        # Extract protein (Chain A) and ligand (Chain B, residue LG1)
-        if 'A' not in structure[0] or 'B' not in structure[0]:
+        # Find the ligand residue (resname LG1) across all chains.
+        ligand_residue = None
+        ligand_chain_id = None
+        for chain in model:
+            for res in chain:
+                if res.get_resname() == 'LG1':
+                    ligand_residue = res
+                    ligand_chain_id = chain.id
+                    break
+            if ligand_residue is not None:
+                break
+
+        if ligand_residue is None:
             return "", "", 0
 
-        protein_chain = structure[0]['A']
-        ligand_chain = structure[0]['B']
-
-        # Get ligand atoms (residue LG1)
-        ligand_residues = [res for res in ligand_chain if res.get_resname() == 'LG1']
-        if not ligand_residues:
-            return "", "", 0
-
-        ligand_residue = ligand_residues[0]
         ligand_atoms = list(ligand_residue.get_atoms())
         ligand_coords = np.array([atom.coord for atom in ligand_atoms])
         ligand_center = ligand_coords.mean(axis=0)
 
-        # Find binding site residues
+        # Every chain that is not the ligand chain is protein.
         binding_residues = []
-        for residue in protein_chain:
-            if residue.id[0] != ' ':  # Skip hetero residues
+        for chain in model:
+            if chain.id == ligand_chain_id:
                 continue
-            min_dist = float('inf')
-            for atom in residue.get_atoms():
-                for lig_atom in ligand_atoms:
-                    dist = np.linalg.norm(atom.coord - lig_atom.coord)
-                    min_dist = min(min_dist, dist)
+            for residue in chain:
+                if residue.id[0] != ' ':  # Skip hetero residues
+                    continue
+                min_dist = float('inf')
+                for atom in residue.get_atoms():
+                    for lig_atom in ligand_atoms:
+                        dist = np.linalg.norm(atom.coord - lig_atom.coord)
+                        min_dist = min(min_dist, dist)
 
-            if min_dist <= distance_cutoff:
-                resname = residue.get_resname()
-                resid = residue.get_id()[1]
-                binding_residues.append(f"A:{resname}{resid}")
+                if min_dist <= distance_cutoff:
+                    resname = residue.get_resname()
+                    resid = residue.get_id()[1]
+                    binding_residues.append(f"{chain.id}:{resname}{resid}")
 
         binding_site_str = ','.join(sorted(binding_residues))
         center_str = f"{ligand_center[0]:.2f},{ligand_center[1]:.2f},{ligand_center[2]:.2f}"
@@ -151,7 +163,10 @@ def process_tar(tar_path, protein_name):
                 try:
                     yf = tar.extractfile(yaml_map[cid])
                     cfg = yaml.safe_load(yf)
-                    smiles = cfg.get('sm_inputs', {}).get('B', {}).get('input', '')
+                    sm = cfg.get('sm_inputs', {}) or {}
+                    # Primary ligand is id Z; fall back to the first sm input.
+                    entry = sm.get('Z') or (next(iter(sm.values())) if sm else {})
+                    smiles = str((entry or {}).get('input', '')).strip()
                 except Exception:
                     pass
 

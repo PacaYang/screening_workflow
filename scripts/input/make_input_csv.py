@@ -25,7 +25,7 @@ def main():
     parser.add_argument("--name-col", default="name", help="col name of protein name in sequences file")
     parser.add_argument("--protein", required=True, help="Protein name to select from sequence file")
     parser.add_argument("--outdir", required=True, help="Output folder for all csv files")
-    parser.add_argument("--chunk", default=100000, help="The splitted csv file size")
+    parser.add_argument("--chunk", type=int, default=100000, help="The splitted csv file size")
     args = parser.parse_args()
   
     # --- Read sequences ---

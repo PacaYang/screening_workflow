@@ -7,6 +7,9 @@ make_input_csv.py
 run_colddta.sh          
 run_md_pbsa_batch.sh        
 run_write_prefold_af3.sh
+run_write_prefold_nesso.sh
+run_write_prefold_protenix.sh
+run_write_prefold_openfold3.sh
 boltz2_scores.py             
 run_compile_summary.sh  
 run_prefold_af3.sh          
@@ -22,8 +25,16 @@ run_split_csv.sh
 write_protein_list.py
 gen_boltz_yaml.py            
 run_af3_batch.sh          
+run_nesso_batch.sh
+run_protenix_batch.sh
+run_openfold3_batch.sh
+run_colabfold_msa.sh
+colabfold_msa.py
 run_graphdta.sh         
 run_vina_batch.sh
 init_select_top.py                 
 run_hmsa.sh             
 run_write_af3_input.sh
+run_write_nesso_input.sh
+run_write_protenix_input.sh
+run_write_openfold3_input.sh
