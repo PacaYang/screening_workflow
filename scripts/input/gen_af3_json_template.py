@@ -31,7 +31,24 @@ import pandas as pd
 from seq_utils import parse_chains, chain_ids, ligand_ids
 
 
-def build_protein_entry(chain_id, sequence, template_cif):
+def load_index_map(template_dir):
+    """Load per-chain queryIndices/templateIndices from template_index_map.json.
+
+    The map lives next to the template CIFs and is produced when a template
+    covers only part of its query sequence (e.g. missing N-terminal residues),
+    so a naive 1:1 mapping would misalign the template. Returns {} when absent,
+    which preserves the original 1:1 behaviour.
+    """
+    if not template_dir:
+        return {}
+    path = os.path.join(template_dir, "template_index_map.json")
+    if os.path.isfile(path):
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def build_protein_entry(chain_id, sequence, template_cif, index_entry=None):
     """One AF3 protein sequence entry: MSA-free, optionally with a template."""
     protein = {
         "id": chain_id,
@@ -42,18 +59,26 @@ def build_protein_entry(chain_id, sequence, template_cif):
         "templates": [],
     }
     if template_cif and os.path.isfile(template_cif):
-        # Full 1:1 residue mapping; assumes the CIF chain matches the sequence.
-        idx = list(range(len(sequence)))
+        if index_entry:
+            # Explicit query<->template correspondence for a partial template.
+            query_idx = index_entry["queryIndices"]
+            templ_idx = index_entry["templateIndices"]
+        else:
+            # Full 1:1 residue mapping; assumes the CIF chain matches the sequence.
+            query_idx = list(range(len(sequence)))
+            templ_idx = query_idx
         protein["templates"] = [{
-            "mmcif": template_cif,
-            "queryIndices": idx,
-            "templateIndices": idx,
+            "mmcifPath": template_cif,
+            "queryIndices": query_idx,
+            "templateIndices": templ_idx,
         }]
     return {"protein": protein}
 
 
-def write_json(name, chain_seqs, ligand_smiles, template_dir, output_path, chunk_idx):
+def write_json(name, chain_seqs, ligand_smiles, template_dir, output_path, chunk_idx,
+               index_map=None):
     cids = chain_ids(len(chain_seqs))
+    index_map = index_map or {}
     data = {
         "name": f"{name}_{chunk_idx}",
         "dialect": "alphafold3",
@@ -67,7 +92,8 @@ def write_json(name, chain_seqs, ligand_smiles, template_dir, output_path, chunk
         if template_dir:
             # Template files follow the original-case convention: <name>_<CHAIN>.cif.
             template_cif = os.path.join(template_dir, f"{name}_{cid}.cif")
-        data["sequences"].append(build_protein_entry(cid, seq, template_cif))
+        data["sequences"].append(
+            build_protein_entry(cid, seq, template_cif, index_map.get(cid)))
 
     for lid, smi in zip(ligand_ids(len(ligand_smiles)), ligand_smiles):
         data["sequences"].append({"ligand": {"id": lid, "smiles": smi}})
@@ -106,12 +132,17 @@ def main():
     smiles_list = pd.read_csv(args.smiles_file)[args.smiles_col].tolist()
     n = max(1, args.n_ligands)
 
+    # Per-chain query<->template index correspondence (if a template_index_map.json
+    # sits alongside the CIFs); otherwise build_protein_entry falls back to 1:1.
+    index_map = load_index_map(args.template_dir)
+
     # Use the original-case protein name in the filename and the JSON "name" field
     # so run_af3_batch.sh (which reads "${protein}_${i}.json") finds the inputs.
     for chunk_idx, start in enumerate(range(0, len(smiles_list), n)):
         ligands = smiles_list[start:start + n]
         output = os.path.join(args.output_dir, f"{args.protein_name}_{chunk_idx}.json")
-        write_json(args.protein_name, chain_seqs, ligands, args.template_dir, output, chunk_idx)
+        write_json(args.protein_name, chain_seqs, ligands, args.template_dir, output,
+                   chunk_idx, index_map)
         if (chunk_idx + 1) % 1000 == 0:
             print("*")
 

@@ -111,6 +111,19 @@ ${TASK_ROOT}/${PROTEIN}/fine_screening/
 - `scripts/pipeline/lib/collection_state.sh` - State management
 - `scripts/pipeline/stages/stage6_collect_results_streaming.sh` - Streaming collection
 - `scripts/pipeline/stages/stage6_collect_results.sh` - Entry point (delegates)
+
+Fine-screening structure methods include AF3, Boltz2, RoseTTAFold, Nesso,
+Protenix, and OpenFold3. Use `--skip-nesso`, `--skip-protenix`, or
+`--skip-openfold3` on `run_full_pipeline.sh` to disable the new methods.
+Their native outputs and score summaries are stored under each method's
+`fine_screening` directory. Stage 6 also updates `compiled_scores.csv` from
+the enabled methods that produced summaries.
+
+Use `--precompute-msa` to search the public ColabFold server once per unique
+protein-chain sequence and reuse `${TASK_ROOT}/${PROTEIN}/fine_screening/MSA/colabfold/*/*.a3m`
+in AF3, Boltz2, Protenix, and OpenFold3. This option is incompatible with
+`--template-mode` and requires `colabfold_batch` (default conda environment:
+`colabfold`).
 - `scripts/scoring/af3_scores.py` - AF3 incremental scoring
 - `scripts/scoring/boltz2_scores.py` - Boltz2 incremental scoring
 

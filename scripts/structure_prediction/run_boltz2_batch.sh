@@ -23,6 +23,8 @@ BOLTZ2_EXE="/home/yangl_pacagen_com/miniconda3/envs/boltz_test/bin/boltz"
 
 # Number of batches to split jobs into
 N_BATCHES=40
+GROUP_SIZE="${MASTER_N_LIGANDS:-1}"
+[ "$GROUP_SIZE" -lt 1 ] && GROUP_SIZE=1
 
 # SLURM configuration
 TIME_LIMIT="48:00:00"     # 4 hours per job
@@ -112,15 +114,17 @@ source "${SCRIPT_ROOT}/pipeline/lib/job_result_ledger.sh"
 # Calculate job range for this batch
 SMILES_FILE="${SELECTED_CSV}"
 N_SMILES=\$(tail -n +2 "\$SMILES_FILE" | wc -l)
+N_INPUTS=\$(( (N_SMILES + ${GROUP_SIZE} - 1) / ${GROUP_SIZE} ))
 
-BATCH_SIZE=\$(( (\$N_SMILES + ${N_BATCHES} - 1) / ${N_BATCHES} ))
+BATCH_SIZE=\$(( (\$N_INPUTS + ${N_BATCHES} - 1) / ${N_BATCHES} ))
 START_IDX=\$(( ${batch_id} * \$BATCH_SIZE ))
 END_IDX=\$(( \$START_IDX + \$BATCH_SIZE ))
-if [ \$END_IDX -gt \$N_SMILES ]; then
-    END_IDX=\$N_SMILES
+if [ \$END_IDX -gt \$N_INPUTS ]; then
+    END_IDX=\$N_INPUTS
 fi
 
 echo "Total SMILES: \$N_SMILES"
+echo "Total prediction inputs: \$N_INPUTS (${GROUP_SIZE} ligand(s) per input)"
 echo "Batch size: \$BATCH_SIZE"
 echo "Processing jobs \$START_IDX to \$((\$END_IDX - 1))"
 
@@ -193,51 +197,23 @@ for seq in data.get('sequences', []):
 " 2>/dev/null || echo "Warning: Could not extract SMILES for job \$job_num"
     fi
 
-    # Find affinity JSON file
-    affinity_json=\$(find "\$job_dir" -name "affinity_*.json" | head -1)
-
-    if [ -z "\$affinity_json" ] || [ ! -f "\$affinity_json" ]; then
-        echo "Warning: No affinity file found in \$job_dir, copying all files"
-        cp "\$job_dir"/affinity_*.json "\$job_output/" 2>/dev/null || true
-        cp "\$job_dir"/confidence*.json "\$job_output/" 2>/dev/null || true
-        cp "\$job_dir"/*model*.cif "\$job_output/" 2>/dev/null || true
-        continue
+    # Locate the native Boltz prediction dir (boltz_results_<i>/predictions/<i>/).
+    # Files are nested there; fall back to the job dir if the layout differs.
+    pred_dir=\$(find "\$job_dir" -type d -path '*/predictions/*' | head -1)
+    if [ -z "\$pred_dir" ]; then
+        pred_dir="\$job_dir"
     fi
 
-    # Find model with lowest (most negative) affinity
-    best_model=\$(python3 <<PYEOF
-import json
-import sys
-try:
-    with open("\$affinity_json") as f:
-        data = json.load(f)
-    affinities = [(k.replace('affinity_pred_value_', ''), v)
-                  for k, v in data.items()
-                  if k.startswith('affinity_pred_value_')]
-    if affinities:
-        best = min(affinities, key=lambda x: x[1])
-        print(best[0])
-    else:
-        print('0')
-except Exception as e:
-    print('0', file=sys.stderr)
-    sys.exit(1)
-PYEOF
-)
+    # Persist structure (best model_0), confidence, and affinity into output/job_<i>/,
+    # keeping native filenames. diffusion_samples=1 so model_0 is the only/best model.
+    cp "\$pred_dir"/*_model_0.cif             "\$job_output/" 2>/dev/null || true
+    cp "\$pred_dir"/confidence_*_model_0.json "\$job_output/" 2>/dev/null || true
+    cp "\$pred_dir"/affinity_*.json           "\$job_output/" 2>/dev/null || true
 
-    # Copy JSON files (required by scoring script)
-    cp "\$affinity_json" "\$job_output/" 2>/dev/null || true
-    cp "\$job_dir"/confidence*.json "\$job_output/" 2>/dev/null || true
-
-    # Copy best model CIF file
-    best_cif="\$job_dir/model_\${best_model}.cif"
-    if [ -f "\$best_cif" ]; then
-        cp "\$best_cif" "\$job_output/best_model.cif"
-        echo "  Copied results for job \$job_num (best model: \$best_model)"
+    if compgen -G "\$job_output/affinity_*.json" > /dev/null; then
+        echo "  Copied results for job \$job_num"
     else
-        # Fallback: copy all models if best not found
-        cp "\$job_dir"/*model*.cif "\$job_output/" 2>/dev/null || true
-        echo "  Copied results for job \$job_num (all models)"
+        echo "  Warning: no affinity file found for job \$job_num"
     fi
 done
 
@@ -310,9 +286,11 @@ for PROTEIN in $PROTEINS; do
     fi
 
     N_SMILES=$(tail -n +2 "$SELECTED_CSV" | wc -l)
-    BATCH_SIZE=$(( ($N_SMILES + $N_BATCHES - 1) / $N_BATCHES ))
+    N_INPUTS=$(( (N_SMILES + GROUP_SIZE - 1) / GROUP_SIZE ))
+    BATCH_SIZE=$(( (N_INPUTS + N_BATCHES - 1) / N_BATCHES ))
 
     log_info "Total SMILES for ${PROTEIN}: ${N_SMILES}"
+    log_info "Total prediction inputs for ${PROTEIN}: ${N_INPUTS}"
     log_info "Batch size: ${BATCH_SIZE}"
 
     # Clear previous job list
@@ -326,7 +304,7 @@ for PROTEIN in $PROTEINS; do
     for BATCH_ID in $(seq 0 $((N_BATCHES - 1))); do
         # Check if this batch has jobs
         START_IDX=$((BATCH_ID * BATCH_SIZE))
-        if [ $START_IDX -lt $N_SMILES ]; then
+        if [ $START_IDX -lt $N_INPUTS ]; then
             if submit_boltz2_batch "$PROTEIN" "$BATCH_ID"; then
                 SUBMITTED=$((SUBMITTED + 1))
             fi

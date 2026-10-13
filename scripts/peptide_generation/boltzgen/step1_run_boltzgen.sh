@@ -32,25 +32,74 @@ SPEC_FILE="${BOLTZGEN_DIR}/design_spec.yaml"
 BUDGET=$(( N_DESIGNS < 50 ? N_DESIGNS : 50 ))
 
 # Convert hotspot residues from "A:45,A:67,B:12" to per-chain binding maps.
+#
+# The residue numbers we receive are PDB *author* numbers (e.g. C:256), but
+# BoltzGen indexes residues 1..N by their position in the chain's SEQRES /
+# full_sequence (matching gemmi's align_sequence_to_polymer, which is exactly
+# what boltzgen.data.parse.pdb_parser.parse_pdb does). For structures whose
+# author numbering is offset or has gaps, the raw author number overruns the
+# chain length and BoltzGen raises "Specified end ... is higher than the length
+# of the chain." So we translate each author number to its 1-indexed sequence
+# position here, using the same alignment BoltzGen uses.
 build_binding_yaml() {
     local hotspots="$1"
-    python3 <<PYTHON
+    local pdb_path="$2"
+    /home/yangl_pacagen_com/miniconda3/envs/boltzgen/bin/python <<PYTHON
 hotspots = "$hotspots"
-from collections import defaultdict
-chains = defaultdict(list)
+pdb_path = "$pdb_path"
+from collections import defaultdict, OrderedDict
+import sys
+import gemmi
+
+# Parse "C:256,C:257,B:12" -> {chain: [author_num, ...]} preserving order.
+requested = OrderedDict()
 for token in hotspots.split(','):
     token = token.strip()
+    if not token:
+        continue
     if ':' in token:
         chain_id, resnum = token.split(':', 1)
-        chains[chain_id.strip()].append(resnum.strip())
+        chain_id = chain_id.strip()
     else:
-        chains['A'].append(token)
+        chain_id, resnum = 'A', token
+    requested.setdefault(chain_id, []).append(int(resnum.strip()))
+
+# Build author-number -> 1-indexed sequence-position map per chain, mirroring
+# boltzgen.data.parse.pdb_parser.parse_pdb.
+st = gemmi.read_structure(pdb_path)
+st.setup_entities()
+author_to_seqpos = defaultdict(dict)  # chain_name -> {author_num: label_seq}
+for entity in st.entities:
+    if entity.entity_type.name != "Polymer":
+        continue
+    sc_name = entity.subchains[0]
+    sc = st[0].get_subchain(sc_name)
+    if len(entity.full_sequence) < 1:
+        entity.full_sequence = [res.name for res in sc]
+    align = gemmi.align_sequence_to_polymer(
+        entity.full_sequence, sc, entity.polymer_type, gemmi.AlignmentScoring()
+    ).match_string
+    chain_name = next((ch.name for ch in st[0] if ch[0].subchain == sc_name), None)
+    i = 0
+    for j, a in enumerate(align):
+        if a == "|":
+            author_to_seqpos[chain_name][sc[i].seqid.num] = j + 1
+            i += 1
 
 print("      binding_types:")
-for chain_id, resnums in sorted(chains.items()):
+for chain_id, author_nums in requested.items():
+    seqpos = []
+    for a in author_nums:
+        pos = author_to_seqpos.get(chain_id, {}).get(a)
+        if pos is None:
+            sys.exit(
+                f"Hotspot residue {chain_id}:{a} not found among resolved "
+                f"residues of chain {chain_id} in {pdb_path}"
+            )
+        seqpos.append(pos)
     print(f"        - chain:")
     print(f"            id: {chain_id}")
-    print(f"            binding: {','.join(resnums)}")
+    print(f"            binding: {','.join(map(str, seqpos))}")
 PYTHON
 }
 
@@ -65,7 +114,7 @@ PYTHON
     echo "      path: $(realpath "$PROTEIN_PDB")"
     echo "      include: all"
     if [[ -n "$HOTSPOT_RESIDUES" ]]; then
-        build_binding_yaml "$HOTSPOT_RESIDUES"
+        build_binding_yaml "$HOTSPOT_RESIDUES" "$(realpath "$PROTEIN_PDB")"
     fi
     echo "      structure_groups: \"all\""
 } > "$SPEC_FILE"

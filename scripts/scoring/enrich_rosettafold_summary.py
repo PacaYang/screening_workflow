@@ -17,31 +17,45 @@ import numpy as np
 from Bio.PDB import PDBParser
 
 def extract_binding_site_residues(pdb_path, distance_cutoff=5.0):
-    """Copied from rosettafold_scores.py to avoid top-level torch import."""
+    """Copied from rosettafold_scores.py to avoid top-level torch import.
+
+    Multichain-aware: locate the ligand as residue 'LG1' on whichever chain it lands
+    (RFAA relabels output chains A,B,C... by config order), and treat all other chains
+    as protein.
+    """
     try:
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure('complex', pdb_path)
-        if 'A' not in structure[0] or 'B' not in structure[0]:
+        model = structure[0]
+        ligand_residue = None
+        ligand_chain_id = None
+        for chain in model:
+            for res in chain:
+                if res.get_resname() == 'LG1':
+                    ligand_residue = res
+                    ligand_chain_id = chain.id
+                    break
+            if ligand_residue is not None:
+                break
+        if ligand_residue is None:
             return "", "", 0
-        protein_chain = structure[0]['A']
-        ligand_chain = structure[0]['B']
-        ligand_residues = [res for res in ligand_chain if res.get_resname() == 'LG1']
-        if not ligand_residues:
-            return "", "", 0
-        ligand_atoms = list(ligand_residues[0].get_atoms())
+        ligand_atoms = list(ligand_residue.get_atoms())
         ligand_coords = np.array([atom.coord for atom in ligand_atoms])
         ligand_center = ligand_coords.mean(axis=0)
         binding_residues = []
-        for residue in protein_chain:
-            if residue.id[0] != ' ':
+        for chain in model:
+            if chain.id == ligand_chain_id:
                 continue
-            min_dist = min(
-                np.linalg.norm(atom.coord - lig_atom.coord)
-                for atom in residue.get_atoms()
-                for lig_atom in ligand_atoms
-            )
-            if min_dist <= distance_cutoff:
-                binding_residues.append(f"A:{residue.get_resname()}{residue.get_id()[1]}")
+            for residue in chain:
+                if residue.id[0] != ' ':
+                    continue
+                min_dist = min(
+                    np.linalg.norm(atom.coord - lig_atom.coord)
+                    for atom in residue.get_atoms()
+                    for lig_atom in ligand_atoms
+                )
+                if min_dist <= distance_cutoff:
+                    binding_residues.append(f"{chain.id}:{residue.get_resname()}{residue.get_id()[1]}")
         center_str = f"{ligand_center[0]:.2f},{ligand_center[1]:.2f},{ligand_center[2]:.2f}"
         return ','.join(sorted(binding_residues)), center_str, len(binding_residues)
     except Exception as e:

@@ -13,7 +13,13 @@ set -e
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 
 TASK_ROOT="${MASTER_TASK_ROOT:-/home/yangl_pacagen_com/snake_test}"
+# Initial screening uses single-chain ML models, so prefer a merged-chain
+# sequences file (sequences_initial.csv) when present; fall back to the
+# comma-separated sequences.csv (which fine screening splits into chains).
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
+if [ -f "${TASK_ROOT}/Input/sequences_initial.csv" ]; then
+    SEQS_CSV="${TASK_ROOT}/Input/sequences_initial.csv"
+fi
 SMILES_CSV="${TASK_ROOT}/Input/compounds_smiles.csv"
 EXE="/home/yangl_pacagen_com/screening_workflow/scripts/input/make_input_csv.py"
 

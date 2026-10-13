@@ -22,6 +22,7 @@ TIME_LIMIT="48:00:00"
 MEMORY="15G"
 CPUS_PER_TASK=2
 PARTITION="g24"
+MAX_CONCURRENT=40
 
 # ============================================================================
 # Functions
@@ -43,40 +44,48 @@ get_proteins() {
     fi
 }
 
-submit_job() {
+# Submit all pending input chunks for a protein as a single SLURM job array.
+# Each array task maps its SLURM_ARRAY_TASK_ID (1-based) to an input index via
+# a manifest file, so non-sequential indices are supported.
+submit_array() {
     local protein=$1
-    local idx=$2
+    local OUTPUT_DIR=$2
+    shift 2
+    local indices=("$@")
 
-    local INIT_DIR="${TASK_ROOT}/${protein}/initial_screening"
-    local INPUT_CSV="${INIT_DIR}/inputs/input_${idx}.csv"
-    local OUTPUT_DIR="${INIT_DIR}/ColdDTA"
-    local OUTPUT_CSV="${OUTPUT_DIR}/prediction_${idx}.csv"
-    local FAILED_CSV="${OUTPUT_DIR}/failed_smiles_${idx}.csv"
+    local MANIFEST="${OUTPUT_DIR}/array_manifest.txt"
+    printf '%s\n' "${indices[@]}" > "$MANIFEST"
+    local n=${#indices[@]}
 
-    if [ -f "$OUTPUT_CSV" ]; then
-        log_info "prediction_${idx}.csv already exists for ${protein}, skipping"
-        return 0
-    fi
-
-    mkdir -p "$OUTPUT_DIR"
-
-    local JOB_SCRIPT="${OUTPUT_DIR}/slurm_${idx}.sh"
+    local JOB_SCRIPT="${OUTPUT_DIR}/slurm_array.sh"
 
     cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
-#SBATCH --job-name=colddta_${protein}_${idx}
+#SBATCH --job-name=colddta_${protein}
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEMORY}
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --partition=${PARTITION}
-#SBATCH --output=${OUTPUT_DIR}/slurm_${idx}_%j.out
-#SBATCH --error=${OUTPUT_DIR}/slurm_${idx}_%j.err
+#SBATCH --array=1-${n}%${MAX_CONCURRENT}
+#SBATCH --output=${OUTPUT_DIR}/slurm_%A_%a.out
+#SBATCH --error=${OUTPUT_DIR}/slurm_%A_%a.err
 
 set -e
 
 echo "Job started at: \$(date)"
 echo "Running on host: \$(hostname)"
+echo "Array task: \${SLURM_ARRAY_TASK_ID}"
+
+IDX=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${MANIFEST}")
+if [ -z "\$IDX" ]; then
+    echo "ERROR: no manifest entry for array task \${SLURM_ARRAY_TASK_ID}" >&2
+    exit 1
+fi
+
+INPUT_CSV="${TASK_ROOT}/${protein}/initial_screening/inputs/input_\${IDX}.csv"
+OUTPUT_CSV="${OUTPUT_DIR}/prediction_\${IDX}.csv"
+FAILED_CSV="${OUTPUT_DIR}/failed_smiles_\${IDX}.csv"
 
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
@@ -85,9 +94,9 @@ mkdir -p "${OUTPUT_DIR}"
 
 export PYTHONPATH="/home/yangl_pacagen_com/Applications/coldDTA:\${PYTHONPATH}"
 python "${EXE}" \\
-    --input "${INPUT_CSV}" \\
-    --output "${OUTPUT_CSV}" \\
-    --failed-smiles "${FAILED_CSV}" \\
+    --input "\${INPUT_CSV}" \\
+    --output "\${OUTPUT_CSV}" \\
+    --failed-smiles "\${FAILED_CSV}" \\
     --batch-size 64 \\
     --target-length 1000 \\
     --checkpoint "${CHECKPOINT}"
@@ -98,11 +107,11 @@ EOF
     JOB_ID=$(sbatch --parsable "$JOB_SCRIPT")
 
     if [ -n "$JOB_ID" ]; then
-        log_info "Submitted input_${idx} for ${protein} (Job ID: ${JOB_ID})"
+        log_info "Submitted array of ${n} tasks for ${protein} (Job ID: ${JOB_ID}, max ${MAX_CONCURRENT} concurrent)"
         echo "$JOB_ID" >> "${OUTPUT_DIR}/job_ids.txt"
         return 0
     else
-        log_error "Failed to submit input_${idx} for ${protein}"
+        log_error "Failed to submit array for ${protein}"
         return 1
     fi
 }
@@ -138,15 +147,25 @@ for PROTEIN in $PROTEINS; do
     mkdir -p "$OUTPUT_DIR"
     > "${OUTPUT_DIR}/job_ids.txt"
 
-    SUBMITTED=0
+    # Collect indices whose predictions don't already exist
+    PENDING=()
     for INPUT_FILE in $INPUT_FILES; do
         IDX=$(basename "$INPUT_FILE" .csv | sed 's/input_//')
-        if submit_job "$PROTEIN" "$IDX"; then
-            SUBMITTED=$((SUBMITTED + 1))
+        if [ -f "${OUTPUT_DIR}/prediction_${IDX}.csv" ]; then
+            log_info "prediction_${IDX}.csv already exists for ${PROTEIN}, skipping"
+            continue
         fi
+        PENDING+=("$IDX")
     done
 
-    log_info "Submitted ${SUBMITTED} ColdDTA jobs for ${PROTEIN}"
+    if [ ${#PENDING[@]} -eq 0 ]; then
+        log_info "All predictions already exist for ${PROTEIN}, nothing to submit"
+        continue
+    fi
+
+    submit_array "$PROTEIN" "$OUTPUT_DIR" "${PENDING[@]}"
+
+    log_info "Submitted ${#PENDING[@]} ColdDTA tasks for ${PROTEIN}"
 done
 
 log_info "All ColdDTA jobs submitted"

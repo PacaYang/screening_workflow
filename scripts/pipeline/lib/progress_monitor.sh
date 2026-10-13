@@ -185,8 +185,9 @@ write_progress_snapshot() {
     local total_success=0
     local total_failed=0
 
-    local af3_line boltz2_line rf_line vina_line
+    local af3_line boltz2_line rf_line vina_line nesso_line protenix_line openfold3_line
     local af3_success af3_failed boltz2_success boltz2_failed rf_success rf_failed vina_success vina_failed
+    local nesso_success nesso_failed protenix_success protenix_failed openfold3_success openfold3_failed
 
     IFS='|' read -r af3_line af3_success af3_failed <<< "$(render_fine_method_status \
         "$task_root" "$proteins" \
@@ -204,9 +205,21 @@ write_progress_snapshot() {
         "$task_root" "$proteins" \
         "fine_screening/Vina/output/job_results.tsv" \
         "fine_screening/Vina/output/job_ids.txt")"
+    IFS='|' read -r nesso_line nesso_success nesso_failed <<< "$(render_fine_method_status \
+        "$task_root" "$proteins" \
+        "fine_screening/Nesso/output/job_results.tsv" \
+        "fine_screening/Nesso/output/job_ids.txt")"
+    IFS='|' read -r protenix_line protenix_success protenix_failed <<< "$(render_fine_method_status \
+        "$task_root" "$proteins" \
+        "fine_screening/Protenix/output/job_results.tsv" \
+        "fine_screening/Protenix/output/job_ids.txt")"
+    IFS='|' read -r openfold3_line openfold3_success openfold3_failed <<< "$(render_fine_method_status \
+        "$task_root" "$proteins" \
+        "fine_screening/OpenFold3/output/job_results.tsv" \
+        "fine_screening/OpenFold3/output/job_ids.txt")"
 
-    total_success=$((af3_success + boltz2_success + rf_success + vina_success))
-    total_failed=$((af3_failed + boltz2_failed + rf_failed + vina_failed))
+    total_success=$((af3_success + boltz2_success + rf_success + vina_success + nesso_success + protenix_success + openfold3_success))
+    total_failed=$((af3_failed + boltz2_failed + rf_failed + vina_failed + nesso_failed + protenix_failed + openfold3_failed))
 
     {
         echo "Status:"
@@ -241,6 +254,9 @@ write_progress_snapshot() {
         echo "Boltz2: ${boltz2_line}"
         echo "RoseTTAFold: ${rf_line}"
         echo "Vina: ${vina_line}"
+        echo "Nesso: ${nesso_line}"
+        echo "Protenix: ${protenix_line}"
+        echo "OpenFold3: ${openfold3_line}"
         echo ""
         echo "Summary:"
         echo "${total_success} jobs succeeded"
