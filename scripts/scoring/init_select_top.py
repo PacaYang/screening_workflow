@@ -26,8 +26,20 @@ def load_csvs_from_dir(dir_path, id_col, score_col, rename_score_to):
             raise ValueError(f"{csv_file} missing id_col '{id_col}'")
         if score_col not in df.columns:
             raise ValueError(f"{csv_file} missing score_col '{score_col}'")
-        dfs.append(df.select([id_col, score_col]))
-    
+        # Skip unfinished trunks: header-only files (all compounds errored into
+        # failed_smiles_*.csv) carry no scores. Keeping them would leave the score
+        # column typed as String and abort the concat for the whole method.
+        if df.height == 0:
+            print(f"  skipping empty (unfinished) trunk: {csv_file}")
+            continue
+        # Coerce score to Float64 so finished trunks with heterogeneous inferred
+        # dtypes concatenate cleanly; non-numeric entries become null.
+        df = df.select([id_col, pl.col(score_col).cast(pl.Float64, strict=False)])
+        dfs.append(df)
+
+    if not dfs:
+        raise ValueError(f"No non-empty prediction files in {dir_path}")
+
     # Concatenate all dataframes and remove duplicates
     combined = pl.concat(dfs)
     combined = combined.rename({score_col: rename_score_to})
@@ -87,6 +99,14 @@ def main():
     ap.add_argument("--conplex-score", default="conplex_score", help="ConPLex score column")
     ap.add_argument("--hmsa-threshold", type=float, default=0.5, help="Keep all HMSA >= this")
     ap.add_argument("--target-n", type=int, default=10000, help="Total selected size")
+    # Priority-quota selection (opt-in). When enabled, the priority tier is filled
+    # first by an even 50/50 split between HMSA-top and DrugLAMP-top (by raw score),
+    # then the remainder of target-n is filled from the other methods by best score.
+    ap.add_argument("--priority-mode", action="store_true",
+                    help="Prioritize DrugLAMP+HMSA (even split) for the priority tier, "
+                         "then fill from GraphDTA/ColdDTA/ConPLex.")
+    ap.add_argument("--priority-n", type=int, default=4000,
+                    help="Size of the priority tier (HMSA+DrugLAMP even split) when --priority-mode is set")
     ap.add_argument("--summary", required=True, help="Path to write summary.csv")
     ap.add_argument("--selected", required=True, help="Path to write selected.csv; This file will be used to map the SMILES for Boltz2 output as well.")
     args = ap.parse_args()
@@ -135,6 +155,87 @@ def main():
 
     # Normalize id column name internally
     df = df.rename({args.id_col: "__id__"})
+
+    # ------------------------------------------------------------------
+    # Priority-quota selection (opt-in): DrugLAMP + HMSA first, then rest.
+    # ------------------------------------------------------------------
+    if args.priority_mode:
+        priority_n = min(args.priority_n, args.target_n)
+
+        def top_ids(col, k, exclude):
+            """Top-k __id__ by descending `col`, skipping nulls and excluded ids."""
+            if k <= 0 or col not in df.columns:
+                return []
+            sub = df.filter(pl.col(col).is_not_null() & ~pl.col("__id__").is_in(list(exclude)))
+            return sub.sort(col, descending=True).head(k)["__id__"].to_list()
+
+        # Priority tier: even 50/50 split between HMSA-top and DrugLAMP-top.
+        chosen, chosen_set, src = [], set(), {}
+
+        n_hmsa = priority_n // 2
+        n_drug = priority_n - n_hmsa
+
+        hmsa_ids = top_ids("hmsa_score", n_hmsa, chosen_set)
+        for i in hmsa_ids:
+            chosen.append(i); chosen_set.add(i); src[i] = "PRIORITY(HMSA)"
+
+        drug_ids = top_ids("druglamp_score", n_drug, chosen_set)
+        for i in drug_ids:
+            chosen.append(i); chosen_set.add(i); src[i] = "PRIORITY(DrugLAMP)"
+
+        # Rebalance the priority tier if one side ran short (partial coverage).
+        short = priority_n - len(chosen)
+        if short > 0:
+            extra_drug = top_ids("druglamp_score", short, chosen_set)
+            for i in extra_drug:
+                chosen.append(i); chosen_set.add(i); src[i] = "PRIORITY(DrugLAMP)"
+            short = priority_n - len(chosen)
+        if short > 0:
+            extra_hmsa = top_ids("hmsa_score", short, chosen_set)
+            for i in extra_hmsa:
+                chosen.append(i); chosen_set.add(i); src[i] = "PRIORITY(HMSA)"
+
+        # Fill tier: remaining slots from GraphDTA/ColdDTA/ConPLex by best score.
+        fill_n = args.target_n - len(chosen)
+        fill_cols = [c for c in ["graphdta_score", "colddta_score", "conplex_score"] if c in df.columns]
+        if fill_n > 0 and fill_cols:
+            fill_pool = (df.filter(~pl.col("__id__").is_in(list(chosen_set)))
+                           .with_columns(pl.max_horizontal(fill_cols).alias("_best"))
+                           .filter(pl.col("_best").is_not_null())
+                           .sort("_best", descending=True)
+                           .head(fill_n))
+            fill_label = f"FILL({'/'.join(m for m in ['GraphDTA','ColdDTA','ConPLex'] if m.lower()+'_score' in df.columns)})"
+            for i in fill_pool["__id__"].to_list():
+                chosen.append(i); chosen_set.add(i); src[i] = fill_label
+
+        # Build selected table, preserving priority-then-fill order.
+        order = {cid: rank for rank, cid in enumerate(chosen)}
+        sel = (df.filter(pl.col("__id__").is_in(chosen))
+                 .with_columns([
+                     pl.col("__id__").replace_strict(src, default=None).alias("source"),
+                     pl.col("__id__").replace_strict(order, default=None).alias("_order"),
+                 ])
+                 .sort("_order")
+                 .drop("_order"))
+
+        out_summary = (df.join(sel.select(["__id__", "source"]), on="__id__", how="left")
+                         .rename({"__id__": args.id_col}))
+        sel_out = sel.rename({"__id__": args.id_col})
+
+        output_cols = [args.id_col, "source", "hmsa_score", "graphdta_score", "colddta_score"]
+        if d is not None:
+            output_cols.append("druglamp_score")
+        if cp is not None:
+            output_cols.append("conplex_score")
+
+        Path(args.summary).parent.mkdir(parents=True, exist_ok=True)
+        out_summary.write_csv(args.summary)
+        sel_out.select(output_cols).write_csv(args.selected)
+        print(f"[priority-mode] selected {len(chosen)} "
+              f"(HMSA={sum(1 for v in src.values() if v=='PRIORITY(HMSA)')}, "
+              f"DrugLAMP={sum(1 for v in src.values() if v=='PRIORITY(DrugLAMP)')}, "
+              f"fill={sum(1 for v in src.values() if v.startswith('FILL'))})")
+        return
 
     # 1) Seed with HMSA >= threshold
     h_keep = df.filter(df["hmsa_score"] >= args.hmsa_threshold)
