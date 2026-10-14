@@ -27,6 +27,9 @@ VALIDATE_RESULTS=1
 # Skip flags
 SKIP_AF3=0
 SKIP_BOLTZ2=0
+SKIP_NESSO=0
+SKIP_PROTENIX=0
+SKIP_OPENFOLD3=0
 SKIP_VINA=0
 SKIP_ROSETTAFOLD=0
 SKIP_MD_PBSA=0
@@ -43,6 +46,9 @@ while [[ $# -gt 0 ]]; do
         --no-validate-results) VALIDATE_RESULTS=0; shift ;;
         --skip-af3) SKIP_AF3=1; shift ;;
         --skip-boltz2) SKIP_BOLTZ2=1; shift ;;
+        --skip-nesso) SKIP_NESSO=1; shift ;;
+        --skip-protenix) SKIP_PROTENIX=1; shift ;;
+        --skip-openfold3) SKIP_OPENFOLD3=1; shift ;;
         --skip-vina) SKIP_VINA=1; shift ;;
         --skip-rosettafold) SKIP_ROSETTAFOLD=1; shift ;;
         --skip-md-pbsa) SKIP_MD_PBSA=1; shift ;;
@@ -145,6 +151,29 @@ collect_method_incremental() {
     return 1  # Still has uncollected
 }
 
+collect_ml_method() {
+    local method="$1" protein="$2" base="$3"
+    local method_dir="${base}/fine_screening/${method}"
+    local summary="${method_dir}/summary.csv"
+    python "${SCRIPT_DIR}/../../scoring/${method,,}_scores.py" \
+        --results-folder "${method_dir}/output" \
+        --selected-csv "${base}/initial_screening/selected.csv" \
+        --output-dir "$method_dir"
+    local pending
+    pending=$(python - "$summary" <<'PY'
+import csv
+import sys
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    print(sum(row["status"] == "pending" for row in csv.DictReader(handle)))
+PY
+)
+    if [ "$pending" -gt 0 ]; then
+        log_info "${protein}/${method}: ${pending} prediction(s) pending"
+        return 1
+    fi
+    return 0
+}
+
 # Validate method results
 validate_method_results() {
     local method="$1"
@@ -188,7 +217,7 @@ main() {
     [ -n "$STATE_FILE" ] && update_stage_status "6" "running"
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        log_info "[DRY RUN] Would collect scores incrementally for AF3, Boltz2, Vina, PBSA"
+        log_info "[DRY RUN] Would collect scores incrementally for AF3, Boltz2, Nesso, Protenix, OpenFold3, Vina, PBSA"
         return 0
     fi
 
@@ -227,6 +256,16 @@ main() {
                 fi
             fi
 
+            if [ "$SKIP_NESSO" -eq 0 ]; then
+                if ! collect_ml_method "Nesso" "$protein" "$base"; then all_complete=0; fi
+            fi
+            if [ "$SKIP_PROTENIX" -eq 0 ]; then
+                if ! collect_ml_method "Protenix" "$protein" "$base"; then all_complete=0; fi
+            fi
+            if [ "$SKIP_OPENFOLD3" -eq 0 ]; then
+                if ! collect_ml_method "OpenFold3" "$protein" "$base"; then all_complete=0; fi
+            fi
+
             if [ "$SKIP_VINA" -eq 0 ]; then
                 if ! collect_method_incremental "Vina" "$protein" "$base" "$expected_count"; then
                     all_complete=0
@@ -260,6 +299,30 @@ main() {
         # Wait before next collection
         log_info "Waiting ${COLLECTION_INTERVAL}s before next collection..."
         sleep "$COLLECTION_INTERVAL"
+    done
+
+    for protein in $PROTEINS; do
+        local base="${TASK_ROOT}/${protein}"
+        local compile_args=()
+        [ "$SKIP_AF3" -eq 1 ] && compile_args+=(--skip-method AF3)
+        [ "$SKIP_BOLTZ2" -eq 1 ] && compile_args+=(--skip-method Boltz2)
+        [ "$SKIP_NESSO" -eq 1 ] && compile_args+=(--skip-method Nesso)
+        [ "$SKIP_PROTENIX" -eq 1 ] && compile_args+=(--skip-method Protenix)
+        [ "$SKIP_OPENFOLD3" -eq 1 ] && compile_args+=(--skip-method OpenFold3)
+        [ "$SKIP_VINA" -eq 1 ] && compile_args+=(--skip-method Vina)
+        [ "$SKIP_ROSETTAFOLD" -eq 1 ] && compile_args+=(--skip-method RoseTTAFold)
+        if { [ "$SKIP_NESSO" -eq 0 ] && [ -f "${base}/fine_screening/Nesso/summary.csv" ]; } || \
+           { [ "$SKIP_PROTENIX" -eq 0 ] && [ -f "${base}/fine_screening/Protenix/summary.csv" ]; } || \
+           { [ "$SKIP_OPENFOLD3" -eq 0 ] && [ -f "${base}/fine_screening/OpenFold3/summary.csv" ]; } || \
+           { [ "$SKIP_AF3" -eq 0 ] && [ -f "${base}/fine_screening/AF3/summary.csv" ]; } || \
+           { [ "$SKIP_BOLTZ2" -eq 0 ] && [ -f "${base}/fine_screening/Boltz2/summary.csv" ]; } || \
+           { [ "$SKIP_VINA" -eq 0 ] && [ -f "${base}/fine_screening/Vina/results.csv" ]; } || \
+           { [ "$SKIP_ROSETTAFOLD" -eq 0 ] && [ -f "${base}/fine_screening/RoseTTAFold/summary.csv" ]; }; then
+            python "${SCRIPT_DIR}/../../scoring/compile_scores.py" \
+                --target-dir "$base" --target-name "$protein" \
+                --output "${base}/fine_screening/compiled_scores.csv" \
+                "${compile_args[@]}"
+        fi
     done
 
     # Update state to completed

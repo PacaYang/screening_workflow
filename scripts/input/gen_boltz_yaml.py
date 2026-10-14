@@ -3,6 +3,7 @@
 ###################################
 
 import json
+import hashlib
 import numpy as np
 import pandas as pd
 import yaml
@@ -11,6 +12,42 @@ import argparse
 from tqdm import tqdm
 
 from seq_utils import parse_chains, chain_ids, ligand_ids
+
+
+def load_msa_paths(manifest_path, protein_name, chain_seqs):
+    with open(manifest_path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if manifest.get("protein") != protein_name:
+        raise ValueError(f"MSA manifest is not for {protein_name}")
+    entries = {entry["chain_id"]: entry for entry in manifest.get("chains", [])}
+    paths = []
+    for cid, sequence in zip(chain_ids(len(chain_seqs)), chain_seqs):
+        entry = entries.get(cid)
+        digest = hashlib.sha256(sequence.upper().encode("utf-8")).hexdigest()
+        if not entry or entry.get("sequence_sha256") != digest:
+            raise ValueError(f"Missing or stale MSA manifest entry for chain {cid}")
+        msa_path = os.path.abspath(entry.get("msa_path", ""))
+        if not os.path.isfile(msa_path):
+            raise ValueError(f"MSA file not found for chain {cid}: {msa_path}")
+        paths.append(msa_path)
+    return paths
+
+
+def write_boltz_multichain_input(output, chain_seqs, msa_paths, ligand_smiles):
+    sequences = []
+    for cid, sequence, msa_path in zip(
+        chain_ids(len(chain_seqs)), chain_seqs, msa_paths
+    ):
+        sequences.append(
+            {"protein": {"id": cid, "sequence": sequence, "msa": msa_path}}
+        )
+    for ligand_id, smiles in zip(ligand_ids(len(ligand_smiles)), ligand_smiles):
+        sequences.append({"ligand": {"id": ligand_id, "smiles": smiles}})
+    payload = {"version": 1, "sequences": sequences}
+    if ligand_smiles:
+        payload["properties"] = [{"affinity": {"binder": "Z"}}]
+    with open(output, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
 
 
 def write_boltz_template_input(output, chain_seqs, ligand_smiles, template_cif):
@@ -88,6 +125,10 @@ if __name__ == "__main__":
     parser.add_argument("--msa",
                     type=str,
                     help='destination of msa csv')
+
+    parser.add_argument("--msa-manifest",
+                    type=str,
+                    help='shared ColabFold MSA manifest for multi-chain input')
     
     parser.add_argument("--sequence",
                     type=str,
@@ -151,6 +192,22 @@ if __name__ == "__main__":
         seq = protein_df.loc[protein_df[args.name_col]==args.protein_name, args.seq_col].iloc[0]
         output_path = os.path.join(args.output, f"{args.protein_name}.yaml")
         write_boltz_input(output_path, seq)
+
+    elif args.msa_manifest:
+        os.makedirs(args.output, exist_ok=True)
+        protein_df = pd.read_csv(args.protein_file)
+        cell = protein_df.loc[
+            protein_df[args.name_col] == args.protein_name, args.seq_col
+        ].iloc[0]
+        chain_seqs = parse_chains(cell)
+        msa_paths = load_msa_paths(args.msa_manifest, args.protein_name, chain_seqs)
+        smiles_list = pd.read_csv(args.smiles_path)["SMILES"].tolist()
+        n = max(1, args.n_ligands)
+        for chunk_idx, start in enumerate(range(0, len(smiles_list), n)):
+            output_path = os.path.join(args.output, f"{chunk_idx}.yaml")
+            write_boltz_multichain_input(
+                output_path, chain_seqs, msa_paths, smiles_list[start:start + n]
+            )
 
     else:
         smiles_df = pd.read_csv(args.smiles_path)

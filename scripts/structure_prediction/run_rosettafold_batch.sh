@@ -39,6 +39,14 @@ TEMPLATE_MODE="${MASTER_TEMPLATE_MODE:-0}"
 N_LIGANDS="${MASTER_N_LIGANDS:-1}"
 SEQS_CSV="${TASK_ROOT}/Input/sequences.csv"
 
+# Shared chain-parsing helpers (seq_utils.parse_chains / chain_ids / ligand_ids).
+SEQ_UTILS_DIR="${SCRIPT_ROOT}/input"
+
+# Hard MSA memory cap for the (rare) case the batch must regenerate a chain's MSA
+# because a prefold artifact is missing. Must stay below LIGAND_MEMORY (15G) so the
+# hhblits -maxmem target does not equal the SLURM allocation and trigger an OOM kill.
+LIGAND_MSA_MEM_GB="${LIGAND_MSA_MEM_GB:-8}"
+
 # ============================================================================
 # Functions
 # ============================================================================
@@ -77,7 +85,7 @@ submit_protein_ligand_batch() {
     local LEDGER_FILE="${OUTPUT_DIR}/job_results.tsv"
     local LEDGER_HELPER="${SCRIPT_ROOT}/pipeline/lib/job_result_ledger.sh"
     local SELECTED_CSV="${TASK_ROOT}/${protein}/initial_screening/selected.csv"
-    local FASTA_FILE="${FOLD_DIR}/input/${protein}.fasta"
+    local FOLD_INPUT_DIR="${FOLD_DIR}/input"
     local PROTEIN_FOLD_OUTPUT="${FOLD_DIR}/output"
 
     # Check if already completed
@@ -92,6 +100,14 @@ submit_protein_ligand_batch() {
     # Check if selected CSV exists
     if [ ! -f "$SELECTED_CSV" ]; then
         log_error "Selected CSV not found: $SELECTED_CSV"
+        return 1
+    fi
+
+    # Number of protein chains for this target (matches what prefold produced).
+    local N_CHAINS
+    N_CHAINS=$(PYTHONPATH="${SEQ_UTILS_DIR}:${PYTHONPATH:-}" python3 -c "import pandas as pd; from seq_utils import parse_chains; df=pd.read_csv('${SEQS_CSV}'); col=next(c for c in ['name','protein_name'] if c in df.columns); print(len(parse_chains(df.loc[df[col]=='${protein}','sequence'].iloc[0])))")
+    if ! [[ "$N_CHAINS" =~ ^[0-9]+$ ]] || [ "$N_CHAINS" -lt 1 ]; then
+        log_error "Could not determine chain count for ${protein}"
         return 1
     fi
 
@@ -120,18 +136,25 @@ echo "Processing protein: PROTEIN_PLACEHOLDER, batch: BATCH_ID_PLACEHOLDER"
 source /home/yangl_pacagen_com/miniconda3/etc/profile.d/conda.sh
 conda activate RFAA_CONDA_ENV_PLACEHOLDER
 
-# Set database paths for MSA generation
+# Set database paths (used only if a chain MSA must be regenerated)
 export DB_UR30="DB_UR30_PLACEHOLDER"
 export DB_BFD="DB_BFD_PLACEHOLDER"
 
-# Calculate batch range
-N_COMPOUNDS=$(tail -n +2 SELECTED_CSV_PLACEHOLDER | wc -l)
-BATCH_SIZE=$(( (N_COMPOUNDS + N_BATCHES_PLACEHOLDER - 1) / N_BATCHES_PLACEHOLDER ))
-START_IDX=$((BATCH_ID_PLACEHOLDER * BATCH_SIZE))
-END_IDX=$((START_IDX + BATCH_SIZE))
-[ $END_IDX -gt $N_COMPOUNDS ] && END_IDX=$N_COMPOUNDS
+# Shared chain-id helpers (seq_utils) on the python path.
+export PYTHONPATH="SEQ_UTILS_DIR_PLACEHOLDER:${PYTHONPATH:-}"
 
-echo "Processing compounds ${START_IDX} to $((END_IDX - 1)) (total: ${N_COMPOUNDS})"
+N_CHAINS=N_CHAINS_PLACEHOLDER
+# N_LIGANDS compounds are co-folded per prediction (chunked).
+N_LIGANDS=N_LIGANDS_PLACEHOLDER
+N_COMPOUNDS=$(tail -n +2 SELECTED_CSV_PLACEHOLDER | wc -l)
+# Number of predictions (chunks) total, and per batch.
+N_CHUNKS=$(( (N_COMPOUNDS + N_LIGANDS - 1) / N_LIGANDS ))
+CHUNKS_PER_BATCH=$(( (N_CHUNKS + N_BATCHES_PLACEHOLDER - 1) / N_BATCHES_PLACEHOLDER ))
+START_CHUNK=$((BATCH_ID_PLACEHOLDER * CHUNKS_PER_BATCH))
+END_CHUNK=$((START_CHUNK + CHUNKS_PER_BATCH))
+[ $END_CHUNK -gt $N_CHUNKS ] && END_CHUNK=$N_CHUNKS
+
+echo "Processing chunks ${START_CHUNK} to $((END_CHUNK - 1)) (N_chunks=${N_CHUNKS}, n_ligands=${N_LIGANDS}, n_chains=${N_CHAINS})"
 
 # Local temporary storage
 LOCAL_OUT=/tmp/rfaa_PROTEIN_PLACEHOLDER_BATCH_ID_PLACEHOLDER_${SLURM_JOB_ID}
@@ -140,112 +163,111 @@ mkdir -p $LOCAL_OUT
 # Change to RFAA directory (required for relative paths)
 cd RFAA_ROOT_PLACEHOLDER
 
-# Process each compound in batch
+# Process each chunk in batch
 SUCCESS_COUNT=0
 FAIL_COUNT=0
 BATCH_TARGETS_FILE="${LOCAL_OUT}/batch_targets.txt"
 : > "$BATCH_TARGETS_FILE"
 
-for i in $(seq $START_IDX $((END_IDX - 1))); do
-    echo "Processing compound index: $i"
+for chunk in $(seq $START_CHUNK $((END_CHUNK - 1))); do
+    echo "Processing chunk: $chunk"
 
-    # Extract SMILES and compound ID for compound i
-    COMPOUND_DATA=$(python3 <<PYEOF
+    # Build protein_inputs + sm_inputs YAML fragments for the N_LIGANDS compounds in
+    # this chunk. Screened compounds get ligand ids Z, Y, X... (Z first) so downstream
+    # scoring that keys on the primary ligand keeps working. Protein chains use the
+    # per-chain FASTAs prefold already wrote (FOLD_INPUT_DIR/<protein>_<CID>.fasta).
+    FRAGMENT=$(python3 - "SELECTED_CSV_PLACEHOLDER" "$chunk" "$N_LIGANDS" "FOLD_INPUT_DIR_PLACEHOLDER" "PROTEIN_PLACEHOLDER" "$N_CHAINS" <<PYEOF
+import sys, string
 import pandas as pd
-import sys
-try:
-    df = pd.read_csv("SELECTED_CSV_PLACEHOLDER")
-    idx = ${i}
-    if idx >= len(df):
-        print("ERROR: Index out of range", file=sys.stderr)
-        sys.exit(1)
-    row = df.iloc[idx]
-    # Try common column names for SMILES
-    smiles = None
-    for col in ['smiles', 'SMILES', 'Smiles']:
-        if col in df.columns:
-            smiles = row[col]
-            break
-    if smiles is None:
-        print("ERROR: No SMILES column found", file=sys.stderr)
-        sys.exit(1)
-    # Try common column names for compound ID
-    compound_id = None
-    for col in ['compound_id', 'id', 'name', 'ID', 'Name']:
-        if col in df.columns:
-            compound_id = row[col]
-            break
-    if compound_id is None:
-        compound_id = f"compound_{idx}"
-    print(f"{compound_id}|{smiles}")
-except Exception as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    sys.exit(1)
+from seq_utils import chain_ids, ligand_ids
+csv, chunk, n_lig, input_dir, protein, n_chains = sys.argv[1:7]
+chunk = int(chunk); n_lig = int(n_lig); n_chains = int(n_chains)
+df = pd.read_csv(csv)
+smi_col = next((c for c in ['smiles','SMILES','Smiles'] if c in df.columns), None)
+start = chunk * n_lig
+rows = df.iloc[start:start + n_lig]
+prot_lines = []
+for cid in chain_ids(n_chains):
+    prot_lines.append(f"  {cid}:")
+    prot_lines.append(f"    fasta_file: \"{input_dir}/{protein}_{cid}.fasta\"")
+sm_lines = []
+for lid, (_, row) in zip(ligand_ids(len(rows)), rows.iterrows()):
+    sm_lines.append(f"  {lid}:")
+    sm_lines.append(f"    input: \"{row[smi_col]}\"")
+    sm_lines.append(f"    input_type: \"smiles\"")
+# Emit: job_id on first line, then PROTEIN block marker, then SM block marker.
+print(f"compound_{start}")
+print("===PROTEIN===")
+print("\n".join(prot_lines))
+print("===SM===")
+print("\n".join(sm_lines))
 PYEOF
 )
 
     if [ $? -ne 0 ]; then
-        echo "Failed to extract data for compound $i"
+        echo "Failed to build inputs for chunk $chunk"
         FAIL_COUNT=$((FAIL_COUNT + 1))
         continue
     fi
 
-    COMPOUND_ID=$(echo "$COMPOUND_DATA" | cut -d'|' -f1)
-    SMILES=$(echo "$COMPOUND_DATA" | cut -d'|' -f2)
-    echo "compound_${COMPOUND_ID}" >> "$BATCH_TARGETS_FILE"
+    COMPOUND_ID=$(echo "$FRAGMENT" | sed -n '1p')
+    PROT_BLOCK=$(echo "$FRAGMENT" | awk '/===PROTEIN===/{f=1;next}/===SM===/{f=0}f')
+    SM_BLOCK=$(echo "$FRAGMENT" | awk '/===SM===/{f=1;next}f')
+    echo "${COMPOUND_ID}" >> "$BATCH_TARGETS_FILE"
 
     echo "  Compound ID: $COMPOUND_ID"
-    echo "  SMILES: $SMILES"
 
-    # Generate config for this compound
-    COMPOUND_CONFIG="${LOCAL_OUT}/config_${COMPOUND_ID}.yaml"
     COMPOUND_OUTPUT="${LOCAL_OUT}/${COMPOUND_ID}"
     mkdir -p "$COMPOUND_OUTPUT"
 
-    # Copy pre-computed MSA files from Stage 1 to avoid regenerating them
-    PROTEIN_MSA_DIR="PROTEIN_FOLD_OUTPUT_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/A"
-    COMPOUND_MSA_DIR="${COMPOUND_OUTPUT}/PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}/A"
-    mkdir -p "$COMPOUND_MSA_DIR"
+    JOB_NAME="PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
 
-    if [ -d "$PROTEIN_MSA_DIR" ]; then
-        echo "  Copying pre-computed MSA files from Stage 1"
-        cp "$PROTEIN_MSA_DIR"/t000_.msa0.a3m "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-        cp "$PROTEIN_MSA_DIR"/t000_.hhr "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-        cp "$PROTEIN_MSA_DIR"/t000_.atab "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-        cp "$PROTEIN_MSA_DIR"/t000_.ss2 "$COMPOUND_MSA_DIR/" 2>/dev/null || true
-    else
-        echo "  Warning: Pre-computed MSA directory not found: $PROTEIN_MSA_DIR"
-    fi
+    # Copy pre-computed per-chain MSA files from prefold so RFAA skips make_msa and
+    # loads the real hhsearch templates (this is what gives a properly folded model).
+    for chain_idx in $(seq 0 $((N_CHAINS - 1))); do
+        CHAIN_ID=$(python3 -c "from seq_utils import chain_ids; print(chain_ids(${N_CHAINS})[${chain_idx}])")
+        PROTEIN_MSA_DIR="PROTEIN_FOLD_OUTPUT_PLACEHOLDER/PROTEIN_PLACEHOLDER_fold/${CHAIN_ID}"
+        COMPOUND_MSA_DIR="${COMPOUND_OUTPUT}/${JOB_NAME}/${CHAIN_ID}"
+        mkdir -p "$COMPOUND_MSA_DIR"
+        if [ -d "$PROTEIN_MSA_DIR" ]; then
+            cp "$PROTEIN_MSA_DIR"/t000_.msa0.a3m "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+            cp "$PROTEIN_MSA_DIR"/t000_.hhr      "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+            cp "$PROTEIN_MSA_DIR"/t000_.atab     "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+            cp "$PROTEIN_MSA_DIR"/t000_.ss2      "$COMPOUND_MSA_DIR/" 2>/dev/null || true
+        else
+            echo "  Warning: pre-computed MSA dir not found for chain ${CHAIN_ID}: $PROTEIN_MSA_DIR"
+        fi
+    done
+
+    # Generate config for this chunk
+    COMPOUND_CONFIG="${LOCAL_OUT}/config_${COMPOUND_ID}.yaml"
 
     cat > "$COMPOUND_CONFIG" <<EOF
 defaults:
   - base
 
-job_name: "PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
+job_name: "${JOB_NAME}"
 output_path: "${COMPOUND_OUTPUT}"
 
 database_params:
   hhdb: /home/yangl_pacagen_com/Applications/model_weights/rosetta_db/pdb100_2021Mar03/pdb100_2021Mar03
+  mem: LIGAND_MSA_MEM_GB_PLACEHOLDER
 
 protein_inputs:
-  A:
-    fasta_file: "FASTA_FILE_PLACEHOLDER"
+${PROT_BLOCK}
 
 sm_inputs:
-  B:
-    input: |-
-      ${SMILES}
-    input_type: "smiles"
+${SM_BLOCK}
 EOF
 
-    # Run inference for this compound
+    # Run inference for this chunk
     if python -m rf2aa.run_inference \
         --config-dir "${LOCAL_OUT}" \
         --config-name "config_${COMPOUND_ID}" 2>&1 | tee "${LOCAL_OUT}/${COMPOUND_ID}.log"; then
-        echo "  SUCCESS: Compound $COMPOUND_ID"
+        echo "  SUCCESS: chunk $chunk ($COMPOUND_ID)"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
     else
-        echo "  FAILED: Compound $COMPOUND_ID"
+        echo "  FAILED: chunk $chunk ($COMPOUND_ID)"
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 done
@@ -273,16 +295,18 @@ if [ $SUCCESS_COUNT -gt 0 ]; then
         output_dir="OUTPUT_DIR_PLACEHOLDER/compound_${compound_id}"
         mkdir -p "$output_dir"
 
-        # Extract and save SMILES from config file (but don't copy the config)
+        # Extract and save the primary ligand SMILES (id Z) from the chunk config.
         config_file="$LOCAL_OUT/config_${compound_name}.yaml"
         if [ -f "$config_file" ]; then
             python3 -c "
 import yaml
 with open('$config_file') as f:
     cfg = yaml.safe_load(f)
-smiles = cfg.get('sm_inputs', {}).get('B', {}).get('input', '')
+sm = cfg.get('sm_inputs', {}) or {}
+# Primary ligand is id Z; fall back to the first sm input.
+entry = sm.get('Z') or (next(iter(sm.values())) if sm else {})
 with open('$output_dir/smiles.txt', 'w') as f:
-    f.write(smiles)
+    f.write(str((entry or {}).get('input', '')).strip())
 " 2>/dev/null || echo "Warning: Could not extract SMILES for compound $compound_id"
         fi
 
@@ -344,7 +368,11 @@ EOFSCRIPT
     sed -i "s|RFAA_ROOT_PLACEHOLDER|${RFAA_ROOT}|g" "$JOB_SCRIPT"
     sed -i "s|SELECTED_CSV_PLACEHOLDER|${SELECTED_CSV}|g" "$JOB_SCRIPT"
     sed -i "s|N_BATCHES_PLACEHOLDER|${N_BATCHES}|g" "$JOB_SCRIPT"
-    sed -i "s|FASTA_FILE_PLACEHOLDER|${FASTA_FILE}|g" "$JOB_SCRIPT"
+    sed -i "s|N_LIGANDS_PLACEHOLDER|${N_LIGANDS}|g" "$JOB_SCRIPT"
+    sed -i "s|N_CHAINS_PLACEHOLDER|${N_CHAINS}|g" "$JOB_SCRIPT"
+    sed -i "s|FOLD_INPUT_DIR_PLACEHOLDER|${FOLD_INPUT_DIR}|g" "$JOB_SCRIPT"
+    sed -i "s|SEQ_UTILS_DIR_PLACEHOLDER|${SEQ_UTILS_DIR}|g" "$JOB_SCRIPT"
+    sed -i "s|LIGAND_MSA_MEM_GB_PLACEHOLDER|${LIGAND_MSA_MEM_GB}|g" "$JOB_SCRIPT"
     sed -i "s|OUTPUT_DIR_PLACEHOLDER|${OUTPUT_DIR}|g" "$JOB_SCRIPT"
     sed -i "s|TOKEN_FILE_PLACEHOLDER|${TOKEN_FILE}|g" "$JOB_SCRIPT"
     sed -i "s|LEDGER_FILE_PLACEHOLDER|${LEDGER_FILE}|g" "$JOB_SCRIPT"
@@ -507,6 +535,24 @@ PYEOF
 
     COMPOUND_OUTPUT="${LOCAL_OUT}/${COMPOUND_ID}"
     mkdir -p "$COMPOUND_OUTPUT"
+
+    # Pre-create stub MSA files so RFAA skips make_msa (template mode: no MSA needed).
+    JOB_NAME="PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
+    for chain_idx in $(seq 0 $((N_CHAINS_PLACEHOLDER - 1))); do
+        CHAIN_ID=$(python3 -c "import string; print(string.ascii_uppercase[${chain_idx}])")
+        MSA_DIR="${COMPOUND_OUTPUT}/${JOB_NAME}/${CHAIN_ID}"
+        mkdir -p "$MSA_DIR"
+        FASTA_FILE="INPUT_DIR_PLACEHOLDER/PROTEIN_PLACEHOLDER_${CHAIN_ID}.fasta"
+        if [ -f "$FASTA_FILE" ]; then
+            SEQ=$(grep -v '^>' "$FASTA_FILE" | tr -d '\n')
+            printf ">query\n%s\n" "$SEQ" > "${MSA_DIR}/t000_.msa0.a3m"
+        else
+            printf ">query\nM\n" > "${MSA_DIR}/t000_.msa0.a3m"
+        fi
+        touch "${MSA_DIR}/t000_.hhr"
+        touch "${MSA_DIR}/t000_.atab"
+    done
+
     COMPOUND_CONFIG="${LOCAL_OUT}/config_${COMPOUND_ID}.yaml"
 
     cat > "$COMPOUND_CONFIG" <<CFGEOF
@@ -517,7 +563,7 @@ job_name: "PROTEIN_PLACEHOLDER_ligand_${COMPOUND_ID}"
 output_path: "${COMPOUND_OUTPUT}"
 
 loader_params:
-  n_templ: 4
+  n_templ: 1
   MAXLAT: 32
   MAXSEQ: 128
   MAXCYCLE: 4
@@ -673,15 +719,12 @@ for PROTEIN in $PROTEINS; do
         continue
     fi
 
-    # In template mode, N_LIGANDS compounds are co-folded per prediction, so the
-    # unit of work is a "chunk", not a single compound.
-    if [ "$TEMPLATE_MODE" -eq 1 ]; then
-        N_UNITS=$(( (N_COMPOUNDS + N_LIGANDS - 1) / N_LIGANDS ))
-    else
-        N_UNITS=$N_COMPOUNDS
-    fi
+    # N_LIGANDS compounds are co-folded per prediction in BOTH modes, so the unit of
+    # work is a "chunk" (ceil(N_COMPOUNDS / N_LIGANDS)), not a single compound. With
+    # N_LIGANDS=1 this is just N_COMPOUNDS.
+    N_UNITS=$(( (N_COMPOUNDS + N_LIGANDS - 1) / N_LIGANDS ))
     BATCH_SIZE=$(( (N_UNITS + N_BATCHES - 1) / N_BATCHES ))
-    log_info "Batch size: ${BATCH_SIZE} units per batch (template_mode=${TEMPLATE_MODE})"
+    log_info "Batch size: ${BATCH_SIZE} units per batch (template_mode=${TEMPLATE_MODE}, n_ligands=${N_LIGANDS})"
 
     RFAA_DIR="${TASK_ROOT}/${PROTEIN}/fine_screening/RoseTTAFold"
     mkdir -p "${RFAA_DIR}/protein_ligand"

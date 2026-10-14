@@ -41,18 +41,29 @@ LOG_DIR="${RFD_DIR}/logs"
 mkdir -p "$BACKBONE_DIR" "$LOG_DIR"
 
 # Build contig map covering ALL target chains, then the designed peptide.
-# Each target chain becomes "<chain><first>-<last>/0" (the /0 is a chain break),
-# and the final "<len>-<len>" segment is the de novo peptide (gets the next
-# chain letter, e.g. D for an A/B/C trimer target).
+# Each contiguous run of resolved residues in a chain becomes one
+# "<chain><start>-<end>/0" segment (the /0 is a chain break), and the final
+# "<len>-<len>" segment is the de novo peptide (gets the next chain letter,
+# e.g. D for an A/B/C trimer target).
+#
+# We split each chain at gaps (missing/unresolved residues) because RFDiffusion
+# requires every residue in a contig range to be present in the PDB; a single
+# "<first>-<last>" span across a gap makes it assert on the missing residue.
 TARGET_SEGMENTS=""
 ALL_CHAINS=$(grep "^ATOM" "$PROTEIN_PDB" | awk '{print $5}' | awk '!seen[$0]++')
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Target chains detected: $(echo $ALL_CHAINS | tr '\n' ' ')"
 
 for ch in $ALL_CHAINS; do
-    ch_first=$(grep "^ATOM" "$PROTEIN_PDB" | awk -v c="$ch" '$5==c {print $6}' | head -1)
-    ch_last=$(grep "^ATOM" "$PROTEIN_PDB" | awk -v c="$ch" '$5==c {print $6}' | tail -1)
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')]   chain ${ch}: residues ${ch_first}-${ch_last}"
-    TARGET_SEGMENTS="${TARGET_SEGMENTS}${ch}${ch_first}-${ch_last}/0 "
+    # Emit one "<chain><start>-<end>/0" token per contiguous run of residues.
+    ch_runs=$(grep "^ATOM" "$PROTEIN_PDB" | awk -v c="$ch" '$5==c {print $6}' \
+        | awk '!seen[$0]++' | sort -n \
+        | awk -v ch="$ch" '
+            NR==1              {start=$1; prev=$1; next}
+            $1==prev+1         {prev=$1; next}
+                               {printf "%s%d-%d/0 ", ch, start, prev; start=$1; prev=$1}
+            END                {printf "%s%d-%d/0 ", ch, start, prev}')
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')]   chain ${ch}: ${ch_runs}"
+    TARGET_SEGMENTS="${TARGET_SEGMENTS}${ch_runs}"
 done
 
 # Build contig map: all target chains followed by the de novo peptide segment

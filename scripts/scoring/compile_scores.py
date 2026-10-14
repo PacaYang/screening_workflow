@@ -1,255 +1,167 @@
 #!/usr/bin/env python3
-"""
-Compile screening scores from AF3, Boltz2, Vina, and RoseTTAFold into a single CSV file.
-
-This script merges scores from multiple structure prediction and docking methods,
-using SMILES as the primary key. For Vina, it selects the best (most negative)
-affinity across all docking boxes. RoseTTAFold is optional.
-"""
+"""Merge available fine-screening method summaries into one CSV."""
 
 import argparse
-import pandas as pd
-from pathlib import Path
+import re
 import sys
+from pathlib import Path
+
+import pandas as pd
+
+
+METHOD_FILES = {
+    "AF3": ("AF3/summary.csv", "af3"),
+    "Boltz2": ("Boltz2/summary.csv", "boltz2"),
+    "Vina": ("Vina/results.csv", "vina"),
+    "RoseTTAFold": ("RoseTTAFold/summary.csv", "rfaa"),
+    "Nesso": ("Nesso/summary.csv", "nesso"),
+    "Protenix": ("Protenix/summary.csv", "protenix"),
+    "OpenFold3": ("OpenFold3/summary.csv", "openfold3"),
+}
+FOLDER_RE = re.compile(r"^(?:job|compound)_(\d+)$")
+
 
 def read_scores_csv(path):
-    """Read a score CSV while normalizing legacy pandas index columns."""
-    df = pd.read_csv(path)
-    unnamed_cols = [c for c in df.columns if str(c).startswith('Unnamed:')]
-    if unnamed_cols:
-        df = df.drop(columns=unnamed_cols)
-    return df
+    frame = pd.read_csv(path)
+    return frame.loc[:, ~frame.columns.astype(str).str.startswith("Unnamed:")]
 
 
-def load_af3_scores(af3_path):
-    """Load AF3 scores and add method prefix to columns."""
-    print(f"Loading AF3 scores from {af3_path}")
-    df = read_scores_csv(af3_path)
-    if 'SMILES' not in df.columns:
-        raise ValueError(f"AF3 summary missing SMILES column: {af3_path}")
-
-    # Rename columns with af3_ prefix (except SMILES)
-    columns_to_rename = {col: f'af3_{col}' for col in df.columns if col != 'SMILES'}
-    df = df.rename(columns=columns_to_rename)
-
-    print(f"  Loaded {len(df)} AF3 entries")
-    return df
+def normalize_smiles(frame, path):
+    if "SMILES" not in frame:
+        raise ValueError(f"summary has no SMILES column: {path}")
+    frame = frame.copy()
+    frame["SMILES"] = frame["SMILES"].fillna("").astype(str).str.strip()
+    if (frame["SMILES"] == "").any():
+        raise ValueError(f"summary has blank SMILES: {path}")
+    return frame
 
 
-def load_boltz2_scores(boltz2_path):
-    """Load Boltz2 scores and add method prefix to columns."""
-    print(f"Loading Boltz2 scores from {boltz2_path}")
-    df = read_scores_csv(boltz2_path)
-    if 'SMILES' not in df.columns:
-        raise ValueError(f"Boltz2 summary missing SMILES column: {boltz2_path}")
-
-    # Rename columns with boltz2_ prefix (except SMILES)
-    columns_to_rename = {col: f'boltz2_{col}' for col in df.columns if col != 'SMILES'}
-    df = df.rename(columns=columns_to_rename)
-
-    print(f"  Loaded {len(df)} Boltz2 entries")
-    return df
+def selected_frame(path):
+    selected = normalize_smiles(read_scores_csv(path), path)
+    selected.insert(0, "compound_index", range(len(selected)))
+    return selected
 
 
-def load_rosettafold_scores(rfaa_path):
-    """Load RoseTTAFold scores and add method prefix to columns."""
-    print(f"Loading RoseTTAFold scores from {rfaa_path}")
-    df = read_scores_csv(rfaa_path)
-    if 'SMILES' not in df.columns:
-        raise ValueError(f"RoseTTAFold summary missing SMILES column: {rfaa_path}")
+def map_folder_indices(frame, path):
+    if "compound_index" in frame:
+        indices = pd.to_numeric(frame["compound_index"], errors="raise")
+        if indices.isna().any() or (indices % 1 != 0).any():
+            raise ValueError(f"invalid compound_index in {path}")
+        return indices.astype(int)
+    if "folder" not in frame:
+        raise ValueError(f"summary lacks compound_index/folder: {path}")
+    values = frame["folder"].astype(str).str.extract(FOLDER_RE, expand=False)
+    if values.isna().any():
+        raise ValueError(f"cannot map folder to compound index in {path}")
+    return values.astype(int)
 
-    columns_to_rename = {col: f'rfaa_{col}' for col in df.columns if col != 'SMILES'}
-    df = df.rename(columns=columns_to_rename)
 
-    print(f"  Loaded {len(df)} RoseTTAFold entries")
-    return df
+def map_vina_indices(frame, target_dir, path):
+    input_dir = target_dir / "fine_screening" / "Vina" / "input"
+    files = sorted(input_dir.glob("input_part_*.csv"),
+                   key=lambda p: int(p.stem.rsplit("_", 1)[1]))
+    partitioned = bool(files)
+    if not files:
+        files = sorted(input_dir.glob("*.csv"))
+    if frame.empty:
+        return pd.Series(dtype=int, index=frame.index)
+    if not files:
+        raise ValueError(f"Vina input CSV files not found under {input_dir}")
+    lookup = {}
+    offset = 0
+    for fallback_part, file in enumerate(files):
+        part = int(file.stem.rsplit("_", 1)[1]) if partitioned else fallback_part
+        table = pd.read_csv(file)
+        for local_index in range(len(table)):
+            lookup[(part, local_index)] = offset + local_index
+        offset += len(table)
+    try:
+        indices = [lookup[(int(folder), int(idx))]
+                   for folder, idx in zip(frame["folder"], frame["idx"])]
+    except (KeyError, ValueError, TypeError) as error:
+        raise ValueError(f"cannot map Vina folder/idx in {path}: {error}") from error
+    return pd.Series(indices, index=frame.index, dtype=int)
 
 
-def load_vina_scores(vina_path):
-    """Load Vina scores and select best affinity per SMILES."""
-    print(f"Loading Vina scores from {vina_path}")
-    df = read_scores_csv(vina_path)
-    expected_cols = ['folder', 'idx', 'box', 'affinity', 'SMILES']
-    for col in expected_cols:
-        if col not in df.columns:
-            df[col] = pd.Series(dtype='object')
-
-    print(f"  Loaded {len(df)} Vina docking results")
-    if df.empty:
-        best_df = df[expected_cols].copy()
+def prepare_method(frame, method, prefix, target_dir, path, selected=None):
+    frame = normalize_smiles(frame, path)
+    if method == "Vina":
+        frame["affinity"] = pd.to_numeric(frame["affinity"], errors="coerce")
+        frame = frame.dropna(subset=["affinity"]).copy()
+    if selected is not None:
+        if method == "Vina":
+            indices = map_vina_indices(frame, target_dir, path)
+        else:
+            indices = map_folder_indices(frame, path)
+        frame = frame.copy()
+        frame["compound_index"] = indices
+        if frame["compound_index"].duplicated().any():
+            if method != "Vina":
+                raise ValueError(f"duplicate compound_index in {path}")
+            frame = frame.sort_values("affinity", ascending=True).drop_duplicates("compound_index")
+        if not frame["compound_index"].isin(selected["compound_index"]).all():
+            raise ValueError(f"compound index outside selected.csv in {path}")
+        checked = frame.merge(selected[["compound_index", "SMILES"]],
+                              on="compound_index", suffixes=("", "_selected"), validate="one_to_one")
+        if (checked["SMILES"] != checked["SMILES_selected"]).any():
+            raise ValueError(f"SMILES mismatch between {path} and selected.csv")
+        frame = frame.drop(columns=["SMILES"])
+        key = "compound_index"
     else:
-        df['affinity'] = pd.to_numeric(df['affinity'], errors='coerce')
-        # Group by SMILES and take the row with minimum (most negative) affinity
-        best_df = df.loc[df.groupby('SMILES')['affinity'].idxmin()]
-
-    # Rename columns with vina_ prefix (except SMILES)
-    columns_to_rename = {col: f'vina_{col}' for col in best_df.columns if col != 'SMILES'}
-    best_df = best_df.rename(columns=columns_to_rename)
-
-    print(f"  Selected best affinity for {len(best_df)} unique compounds")
-    return best_df
+        if method == "Vina":
+            frame = frame.sort_values("affinity", ascending=True).drop_duplicates("SMILES")
+        if frame["SMILES"].duplicated().any():
+            raise ValueError(f"duplicate SMILES in {path}; selected.csv is required for index joins")
+        key = "SMILES"
+    return frame.rename(columns={col: f"{prefix}_{col}" for col in frame if col != key})
 
 
-def merge_scores(af3_df, boltz2_df, vina_df, rfaa_df=None):
-    """Merge all score dataframes on SMILES using outer join."""
-    print("\nMerging scores...")
-
-    # Start with AF3
-    merged = af3_df.copy()
-    print(f"  Starting with {len(merged)} AF3 entries")
-
-    # Merge with Boltz2
-    merged = merged.merge(boltz2_df, on='SMILES', how='outer')
-    print(f"  After Boltz2 merge: {len(merged)} entries")
-
-    # Merge with Vina
-    merged = merged.merge(vina_df, on='SMILES', how='outer')
-    print(f"  After Vina merge: {len(merged)} entries")
-
-    # Merge with RoseTTAFold (optional)
-    if rfaa_df is not None:
-        merged = merged.merge(rfaa_df, on='SMILES', how='outer')
-        print(f"  After RoseTTAFold merge: {len(merged)} entries")
-
-    # Move SMILES to first column
-    cols = ['SMILES'] + [col for col in merged.columns if col != 'SMILES']
-    merged = merged[cols]
-
-    return merged
-
-
-def print_summary(df, target_name):
-    """Print summary statistics for the merged dataframe."""
-    print(f"\n{'='*60}")
-    print(f"Summary for {target_name}")
-    print(f"{'='*60}")
-
-    print(f"\nTotal unique compounds: {len(df)}")
-
-    # Count non-null values for each method
-    af3_cols = [col for col in df.columns if col.startswith('af3_')]
-    boltz2_cols = [col for col in df.columns if col.startswith('boltz2_')]
-    vina_cols = [col for col in df.columns if col.startswith('vina_')]
-
-    if af3_cols:
-        af3_count = df[af3_cols[0]].notna().sum()
-        print(f"Compounds with AF3 scores: {af3_count}")
-
-    if boltz2_cols:
-        boltz2_count = df[boltz2_cols[0]].notna().sum()
-        print(f"Compounds with Boltz2 scores: {boltz2_count}")
-
-    if vina_cols:
-        vina_count = df[vina_cols[0]].notna().sum()
-        print(f"Compounds with Vina scores: {vina_count}")
-
-    rfaa_cols = [col for col in df.columns if col.startswith('rfaa_')]
-    if rfaa_cols:
-        rfaa_count = df[rfaa_cols[0]].notna().sum()
-        print(f"Compounds with RoseTTAFold scores: {rfaa_count}")
-
-    # Count compounds with all scores
-    all_methods_mask = pd.Series(True, index=df.index)
-    if af3_cols:
-        all_methods_mask &= df[af3_cols[0]].notna()
-    if boltz2_cols:
-        all_methods_mask &= df[boltz2_cols[0]].notna()
-    if vina_cols:
-        all_methods_mask &= df[vina_cols[0]].notna()
-    if rfaa_cols:
-        all_methods_mask &= df[rfaa_cols[0]].notna()
-
-    complete_count = all_methods_mask.sum()
-    print(f"Compounds with complete scores (all methods): {complete_count}")
-
-    print(f"\nFirst 5 rows:")
-    print(df.head().to_string())
-    print(f"\n{'='*60}\n")
+def compile_scores(target_dir, rfaa_path=None, skip_methods=()):
+    fine_dir = target_dir / "fine_screening"
+    selected_path = target_dir / "initial_screening" / "selected.csv"
+    selected = selected_frame(selected_path) if selected_path.is_file() else None
+    merged = selected.copy() if selected is not None else None
+    loaded = []
+    for method, (relative, prefix) in METHOD_FILES.items():
+        if method in skip_methods:
+            continue
+        path = Path(rfaa_path) if method == "RoseTTAFold" and rfaa_path else fine_dir / relative
+        if not path.is_file() or path.stat().st_size == 0:
+            continue
+        frame = read_scores_csv(path)
+        prepared = prepare_method(frame, method, prefix, target_dir, path, selected)
+        if merged is None:
+            merged = prepared
+        else:
+            key = "compound_index" if selected is not None else "SMILES"
+            merged = merged.merge(prepared, on=key, how="left" if selected is not None else "outer",
+                                  validate="one_to_one")
+        loaded.append(method)
+    if not loaded:
+        raise ValueError(f"no method summaries found under {fine_dir}")
+    if selected is None:
+        merged = merged[["SMILES"] + [col for col in merged if col != "SMILES"]]
+    return merged, loaded
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Compile screening scores from AF3, Boltz2, and Vina'
-    )
-    parser.add_argument(
-        '--target-dir',
-        required=True,
-        help='Target directory containing fine_screening subdirectory'
-    )
-    parser.add_argument(
-        '--target-name',
-        required=True,
-        help='Target name (e.g., IL6RA, IL6RB)'
-    )
-    parser.add_argument(
-        '--output',
-        required=True,
-        help='Output CSV file path'
-    )
-    parser.add_argument(
-        '--rfaa-path',
-        default=None,
-        help='Path to RoseTTAFold summary.csv (optional)'
-    )
-
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target-dir", type=Path, required=True)
+    parser.add_argument("--target-name", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--rfaa-path", type=Path, default=None)
+    parser.add_argument("--skip-method", action="append", choices=METHOD_FILES, default=[])
     args = parser.parse_args()
-
-    # Expand paths
-    target_dir = Path(args.target_dir).expanduser()
-    output_path = Path(args.output).expanduser()
-
-    # Define input paths
-    af3_path = target_dir / 'fine_screening' / 'AF3' / 'summary.csv'
-    boltz2_path = target_dir / 'fine_screening' / 'Boltz2' / 'summary.csv'
-    vina_path = target_dir / 'fine_screening' / 'Vina' / 'results.csv'
-    rfaa_path = Path(args.rfaa_path).expanduser() if args.rfaa_path else \
-                target_dir / 'fine_screening' / 'RoseTTAFold' / 'summary.csv'
-
-    # Check that required input files exist
-    missing_files = []
-    for path in [af3_path, boltz2_path, vina_path]:
-        if not path.exists():
-            missing_files.append(str(path))
-
-    if missing_files:
-        print("ERROR: Missing input files:", file=sys.stderr)
-        for f in missing_files:
-            print(f"  {f}", file=sys.stderr)
-        sys.exit(1)
-
-    # Load scores
     try:
-        af3_df = load_af3_scores(af3_path)
-        boltz2_df = load_boltz2_scores(boltz2_path)
-        vina_df = load_vina_scores(vina_path)
-        if rfaa_path.exists() and rfaa_path.stat().st_size > 1:
-            rfaa_df = load_rosettafold_scores(rfaa_path)
-        else:
-            rfaa_df = None
-            print(f"RoseTTAFold summary not found or empty at {rfaa_path}, skipping")
-    except Exception as e:
-        print(f"ERROR loading scores: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Merge scores
-    try:
-        merged_df = merge_scores(af3_df, boltz2_df, vina_df, rfaa_df)
-    except Exception as e:
-        print(f"ERROR merging scores: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Save output
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        merged_df.to_csv(output_path, index=False)
-        print(f"\nSaved compiled scores to: {output_path}")
-    except Exception as e:
-        print(f"ERROR saving output: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Print summary
-    print_summary(merged_df, args.target_name)
+        frame, methods = compile_scores(args.target_dir.expanduser(), args.rfaa_path, args.skip_method)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(args.output, index=False)
+    except Exception as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    print(f"Wrote {len(frame)} rows for {args.target_name} to {args.output}; methods: {', '.join(methods)}")
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

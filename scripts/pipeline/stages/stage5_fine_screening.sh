@@ -27,12 +27,16 @@ POLL_INTERVAL=300
 SKIP_AF3=0
 SKIP_BOLTZ2=0
 SKIP_ROSETTAFOLD=0
+SKIP_NESSO=0
+SKIP_PROTENIX=0
+SKIP_OPENFOLD3=0
 SKIP_VINA=0
 SKIP_DIFFDOCK=0
 SKIP_MD_PBSA=0
 
-# Template mode (single-stage, no prefold) and multi-ligand
+# Template mode (single-stage, no prefold) and multi-ligand for AF3-like methods
 TEMPLATE_MODE=0
+PRECOMPUTE_MSA=0
 N_LIGANDS=1
 
 # Parse arguments
@@ -45,10 +49,14 @@ while [[ $# -gt 0 ]]; do
         --skip-af3) SKIP_AF3=1; shift ;;
         --skip-boltz2) SKIP_BOLTZ2=1; shift ;;
         --skip-rosettafold) SKIP_ROSETTAFOLD=1; shift ;;
+        --skip-nesso) SKIP_NESSO=1; shift ;;
+        --skip-protenix) SKIP_PROTENIX=1; shift ;;
+        --skip-openfold3) SKIP_OPENFOLD3=1; shift ;;
         --skip-vina) SKIP_VINA=1; shift ;;
         --skip-diffdock) SKIP_DIFFDOCK=1; shift ;;
         --skip-md-pbsa) SKIP_MD_PBSA=1; shift ;;
         --template-mode) TEMPLATE_MODE=1; shift ;;
+        --precompute-msa) PRECOMPUTE_MSA=1; shift ;;
         --n-ligands) N_LIGANDS="$2"; shift 2 ;;
         --state-file) STATE_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -58,6 +66,10 @@ done
 # Validate required arguments
 if [ -z "$TASK_ROOT" ] || [ -z "$PROTEINS" ]; then
     log_error "Missing required arguments"
+    exit 1
+fi
+if [ "$TEMPLATE_MODE" -eq 1 ] && [ "$PRECOMPUTE_MSA" -eq 1 ]; then
+    log_error "--template-mode and --precompute-msa are mutually exclusive"
     exit 1
 fi
 
@@ -70,24 +82,30 @@ main() {
 
     # Export environment variables
     export_pipeline_env "$TASK_ROOT" "$PROTEINS"
-    # Make template settings visible to the batch scripts (RoseTTAFold reads these).
-    export MASTER_TEMPLATE_MODE="$TEMPLATE_MODE"
+    # RoseTTAFold is decoupled from --template-mode: force it to 0 so the RF batch
+    # always takes its prefold/MSA path (submit_protein_ligand_batch), never the
+    # template path. AF3/Boltz2 batch scripts ignore MASTER_TEMPLATE_MODE.
+    export MASTER_TEMPLATE_MODE=0
+    export MASTER_PRECOMPUTE_MSA="$PRECOMPUTE_MSA"
     export MASTER_N_LIGANDS="$N_LIGANDS"
 
-    # 5a — Submit AF3, Boltz2, Vina, RoseTTAFold
-    log_info "Stage 5a: Submitting AF3, Boltz2, Vina, RoseTTAFold jobs"
+    # 5a — Submit structure prediction and docking jobs
+    log_info "Stage 5a: Submitting AF3, Boltz2, Nesso, Protenix, OpenFold3, Vina, RoseTTAFold jobs"
     [ "$SKIP_AF3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_af3_batch.sh"
     [ "$SKIP_BOLTZ2" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_boltz2_batch.sh"
     [ "$SKIP_VINA" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../docking/run_vina_batch.sh"
     [ "$SKIP_ROSETTAFOLD" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_rosettafold_batch.sh"
+    [ "$SKIP_NESSO" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_nesso_batch.sh"
+    [ "$SKIP_PROTENIX" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_protenix_batch.sh"
+    [ "$SKIP_OPENFOLD3" -eq 0 ] && run_or_dry "$DRY_RUN" bash "${SCRIPT_DIR}/../../structure_prediction/run_openfold3_batch.sh"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log_info "[DRY RUN] Would wait for jobs and submit dependent stages"
         return 0
     fi
 
-    # 5b — Wait for AF3, Boltz2, Vina, RoseTTAFold
-    log_info "Stage 5b: Waiting for AF3, Boltz2, Vina, RoseTTAFold jobs"
+    # 5b — Wait for structure prediction and docking jobs
+    log_info "Stage 5b: Waiting for AF3, Boltz2, Nesso, Protenix, OpenFold3, Vina, RoseTTAFold jobs"
     local job_files=()
 
     for protein in $PROTEINS; do
@@ -99,6 +117,12 @@ main() {
             job_files+=("${TASK_ROOT}/${protein}/fine_screening/Vina/output/job_ids.txt")
         [ "$SKIP_ROSETTAFOLD" -eq 0 ] && [ -f "${TASK_ROOT}/${protein}/fine_screening/RoseTTAFold/protein_ligand/job_ids.txt" ] && \
             job_files+=("${TASK_ROOT}/${protein}/fine_screening/RoseTTAFold/protein_ligand/job_ids.txt")
+        [ "$SKIP_NESSO" -eq 0 ] && [ -f "${TASK_ROOT}/${protein}/fine_screening/Nesso/output/job_ids.txt" ] && \
+            job_files+=("${TASK_ROOT}/${protein}/fine_screening/Nesso/output/job_ids.txt")
+        [ "$SKIP_PROTENIX" -eq 0 ] && [ -f "${TASK_ROOT}/${protein}/fine_screening/Protenix/output/job_ids.txt" ] && \
+            job_files+=("${TASK_ROOT}/${protein}/fine_screening/Protenix/output/job_ids.txt")
+        [ "$SKIP_OPENFOLD3" -eq 0 ] && [ -f "${TASK_ROOT}/${protein}/fine_screening/OpenFold3/output/job_ids.txt" ] && \
+            job_files+=("${TASK_ROOT}/${protein}/fine_screening/OpenFold3/output/job_ids.txt")
     done
 
     if [ ${#job_files[@]} -gt 0 ]; then
