@@ -107,6 +107,31 @@ def main():
                          "then fill from GraphDTA/ColdDTA/ConPLex.")
     ap.add_argument("--priority-n", type=int, default=4000,
                     help="Size of the priority tier (HMSA+DrugLAMP even split) when --priority-mode is set")
+    # ------------------------------------------------------------------
+    # LOCAL PATCH (TGFb project): rank-based fill instead of max_horizontal.
+    #
+    # WHY: max_horizontal() compares RAW scores across models whose scales
+    # differ by roughly an order of magnitude (GraphDTA/ColdDTA are KIBA-scale,
+    # ~9-15; DrugLAMP/ConPLex are probabilities, 0-1). A probability can never
+    # exceed a KIBA value, so max() always returns a KIBA score and
+    # DrugLAMP/ConPLex are computed, written to selected.csv, and then have zero
+    # influence on which compounds are chosen. Verified across 10.1M historical
+    # compounds: those two models supplied the winning score 0 times.
+    #
+    # WHAT: --rank-mode ranks each model independently (rank 1 = best for that
+    # model) and fills by the MEAN of each compound's available ranks, so every
+    # model carries equal weight regardless of scale.
+    #
+    # MEAN not SUM: coverage is patchy at production scale (ConPLex scored 0% of
+    # B2 compounds; HMSA ~11% of PTGFR). Summing ranks over "whichever models
+    # have data" would give a compound with fewer scores a smaller sum, i.e.
+    # make missing data an advantage. Mean divides by the count.
+    #
+    # The HMSA >= threshold seed step is UNCHANGED.
+    # ------------------------------------------------------------------
+    ap.add_argument("--rank-mode", action="store_true",
+                    help="Fill by mean of per-model ranks (scale-free) instead "
+                         "of max_horizontal over raw scores.")
     ap.add_argument("--summary", required=True, help="Path to write summary.csv")
     ap.add_argument("--selected", required=True, help="Path to write selected.csv; This file will be used to map the SMILES for Boltz2 output as well.")
     args = ap.parse_args()
@@ -268,11 +293,36 @@ def main():
     if cp is not None:
         score_cols.append("conplex_score")
 
-    # Select based on best score across all available methods
     mask_pool = ~df["__id__"].is_in(h_keep_ids)
-    candidates = df.filter(mask_pool).with_columns(
-        pl.max_horizontal(score_cols).alias("best_score")
-    ).sort("best_score", descending=True)
+
+    if args.rank_mode:
+        # ---------- LOCAL PATCH: scale-free rank aggregation ----------
+        pool = df.filter(mask_pool)
+        rank_cols = []
+        for c in score_cols:
+            rname = c.replace("_score", "_rank")
+            pool = pool.with_columns(
+                pl.col(c).rank(method="average", descending=True).alias(rname)
+            )
+            rank_cols.append(rname)
+        pool = pool.with_columns([
+            pl.mean_horizontal(rank_cols).alias("mean_rank"),
+            pl.sum_horizontal(
+                [pl.col(r).is_not_null().cast(pl.Int32) for r in rank_cols]
+            ).alias("n_models_scored"),
+        ])
+        # lower mean rank is better; break ties by how many models scored it
+        candidates = pool.sort(["mean_rank", "n_models_scored"],
+                               descending=[False, True])
+        print("[rank-mode] ranking %d models: %s"
+              % (len(score_cols), ", ".join(score_cols)))
+        print("[rank-mode] pool=%d -> taking %d by lowest mean rank"
+              % (pool.height, remaining_n))
+    else:
+        # ---------- ORIGINAL upstream behaviour ----------
+        candidates = df.filter(mask_pool).with_columns(
+            pl.max_horizontal(score_cols).alias("best_score")
+        ).sort("best_score", descending=True)
 
     chosen_even = candidates.head(remaining_n)["__id__"].to_list()
     chosen_ids = list(h_keep_ids) + chosen_even
@@ -286,7 +336,8 @@ def main():
         method_names.append("DrugLAMP")
     if cp is not None:
         method_names.append("ConPLex")
-    fill_label = f"FILL({'/'.join(method_names)})"
+    fill_label = (("RANKFILL(" if args.rank_mode else "FILL(")
+                  + '/'.join(method_names) + ")")
 
     sel = sel.with_columns(
         pl.when(pl.col("__id__").is_in(list(h_keep_ids)))
